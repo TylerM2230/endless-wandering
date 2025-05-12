@@ -1,0 +1,1418 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Endless Wandering</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        font-family: "Inter", sans-serif;
+        /* Background color removed from body, handled by Three.js */
+        color: #fff;
+      }
+      canvas {
+        display: block;
+      }
+      #blocker,
+      #quotePopup {
+        /* Apply similar styles to blocker and quote popup */
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.7); /* Slightly darker overlay */
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        z-index: 10;
+      }
+      #instructions,
+      #quoteContent {
+        /* Apply similar styles to inner content divs */
+        width: 70%; /* Wider for more info */
+        max-width: 600px; /* Max width increased */
+        padding: 25px;
+        background-color: rgba(
+          20,
+          20,
+          25,
+          0.92
+        ); /* Darker, slightly blueish tint */
+        border-radius: 12px;
+        cursor: pointer;
+        box-shadow: 0 0 15px rgba(0, 175, 255, 0.3); /* Subtle glow for sci-fi feel */
+      }
+      #instructions h1,
+      #quoteContent h2 {
+        margin-top: 0;
+        font-size: 2.2em;
+        color: #00afff; /* Sci-fi blue */
+      }
+      #quoteContent h2 {
+        font-size: 1.5em; /* Smaller heading for quote source */
+        margin-bottom: 15px;
+      }
+      #instructions p,
+      #quoteContent p {
+        font-size: 1.1em; /* Adjusted for more text */
+        line-height: 1.7;
+      }
+      #quoteContent p#quoteText {
+        font-style: italic;
+        margin-bottom: 20px;
+      }
+      #quoteContent p#quoteCloseInstruction {
+        font-size: 0.9em;
+        color: #aaa;
+      }
+
+      #gameUIDiv {
+        /* Keep this for potential future UI elements, but it will be empty for now */
+        position: absolute;
+        top: 15px;
+        left: 15px;
+        padding: 12px;
+        background-color: rgba(10, 10, 15, 0.4);
+        border-radius: 8px;
+        font-size: 1.1em;
+        color: #e0e0e0;
+        z-index: 1;
+        border: 1px solid rgba(0, 175, 255, 0.2);
+        display: none; /* Hide if empty */
+      }
+      #gameUIDiv p {
+        margin: 5px 0;
+      }
+    </style>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
+          "three/examples/jsm/controls/PointerLockControls.js": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/controls/PointerLockControls.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="blocker">
+      <div id="instructions">
+        <h1 id="instructionsTitle">Endless Wandering</h1>
+        <p id="instructionsText">
+          Click to begin. Wander the infinite landscape. Collect the glowing
+          orbs to ponder. Observe the anomalies.
+        </p>
+        <p>(W, A, S, D = Move, MOUSE = Look, SPACE = Jump)</p>
+        <p>Press ESC to release mouse.</p>
+      </div>
+    </div>
+
+    <div id="quotePopup" style="display: none">
+      <div id="quoteContent">
+        <h2 id="quoteSource">A Moment of Reflection</h2>
+        <p id="quoteText">"The quote will appear here."</p>
+        <p id="quoteCloseInstruction">(Click to continue wandering)</p>
+      </div>
+    </div>
+
+    <div id="gameUIDiv"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+
+    <script type="module">
+      console.log("Module script started.");
+      // Import necessary Three.js components
+      import {
+        Vector3,
+        Scene,
+        Color,
+        Fog,
+        PerspectiveCamera,
+        WebGLRenderer,
+        PCFSoftShadowMap,
+        Group,
+        Object3D,
+        HemisphereLight,
+        DirectionalLight,
+        Raycaster,
+        PlaneGeometry,
+        MeshStandardMaterial,
+        Mesh,
+        MathUtils,
+        SphereGeometry,
+        BoxGeometry,
+        DodecahedronGeometry,
+        CircleGeometry,
+        MeshBasicMaterial,
+        BufferGeometry,
+        Float32BufferAttribute,
+        PointsMaterial,
+        Points,
+        BufferAttribute, // Needed for vertex colors
+        IcosahedronGeometry, // For collectible orbs
+        PointLight, // For orb glow
+      } from "three";
+      // Import PointerLockControls for first-person camera movement
+      import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
+
+      // --- Core Constants (Define these first) ---
+      // Terrain generation constants
+      const CHUNK_SIZE = 100; // Width and depth of a single terrain chunk
+      const CHUNK_SEGMENTS = 50; // Number of segments per side of a terrain chunk (resolution)
+      const NOISE_SCALE = 350; // Scale factor for the Simplex noise used for terrain height
+      const TERRAIN_AMPLITUDE = 40; // Maximum height variation of the terrain
+      const TERRAIN_OCTAVES = 4; // Number of noise layers for terrain detail
+      const TERRAIN_LACUNARITY = 2.0; // How much detail is added with each octave
+      const TERRAIN_PERSISTENCE = 0.5; // How much each octave contributes to the total shape
+      const chunkLoadRadius = 2; // Radius (in chunks) around the player for loading/unloading terrain
+
+      // Player physics and properties constants
+      const PLAYER_HEIGHT = 1.8; // Virtual height of the player camera
+      const PLAYER_ACCELERATION = 200.0; // Rate at which the player gains speed
+      const PLAYER_DAMPING = 10.0; // Rate at which player speed decreases (friction)
+      const PLAYER_JUMP_FORCE = 8.0; // Initial upward velocity on jump
+      const GRAVITY = 25.0; // Downward acceleration due to gravity
+      const PLAYER_RADIUS = 0.5; // Radius for player collision detection
+
+      // Orb Collection state (depends on CHUNK_SIZE and chunkLoadRadius)
+      const ORB_SPAWN_PROBABILITY = 0.0005; // Decreased spawn rate
+      const ORB_SIZE = 0.7;
+      const ORB_COLOR = 0xffd700; // Gold color
+      const ORB_HOVER_HEIGHT = 1.0;
+      const ORB_COLLECTION_RADIUS = 1.5;
+      const ORB_UNLOAD_DISTANCE = CHUNK_SIZE * (chunkLoadRadius + 1.5); // Now CHUNK_SIZE and chunkLoadRadius are defined
+
+      // Decorative environmental object constants
+      const OBJECT_SPAWN_PROBABILITY = 0.005;
+      const MIN_OBJECT_SIZE = 1;
+      const MAX_OBJECT_SIZE = 5;
+      const OBJECT_GEOMETRIES = [
+        () =>
+          new SphereGeometry(
+            MathUtils.randFloat(MIN_OBJECT_SIZE / 2, MAX_OBJECT_SIZE / 2),
+            16,
+            16
+          ),
+        () =>
+          new BoxGeometry(
+            MathUtils.randFloat(MIN_OBJECT_SIZE, MAX_OBJECT_SIZE),
+            MathUtils.randFloat(MIN_OBJECT_SIZE, MAX_OBJECT_SIZE),
+            MathUtils.randFloat(MIN_OBJECT_SIZE, MAX_OBJECT_SIZE)
+          ),
+        () =>
+          new DodecahedronGeometry(
+            MathUtils.randFloat(MIN_OBJECT_SIZE / 1.5, MAX_OBJECT_SIZE / 1.5),
+            0
+          ),
+      ];
+      const OBJECT_MATERIALS = [
+        new MeshStandardMaterial({
+          color: 0xff4444,
+          roughness: 0.1,
+          metalness: 0.8,
+        }),
+        new MeshStandardMaterial({
+          color: 0x333333,
+          roughness: 0.8,
+          metalness: 0.1,
+        }),
+        new MeshStandardMaterial({
+          color: 0x44ffaa,
+          roughness: 0.5,
+          metalness: 0.5,
+        }),
+        new MeshStandardMaterial({
+          color: 0xffff44,
+          roughness: 0.2,
+          metalness: 0.7,
+        }),
+      ];
+
+      // Random Oddity (Floating Orb) constants
+      const ODDITY_SPAWN_INTERVAL_MIN = 8000;
+      const ODDITY_SPAWN_INTERVAL_MAX = 15000;
+      const ODDITY_DURATION = 5000;
+      const ODDITY_FADE_TIME = 1000;
+      const ODDITY_SIZE = 1.0;
+      const ODDITY_COLOR = 0xffaa00;
+      const ODDITY_SPAWN_MIN_DIST = 15;
+      const ODDITY_SPAWN_MAX_DIST = 40;
+      const ODDITY_HOVER_HEIGHT = 3.0;
+      const ODDITY_BOB_SPEED = 1.5;
+      const ODDITY_BOB_AMOUNT = 0.3;
+
+      // --- Global Variables (Scene, Game State, etc.) ---
+      // Core Three.js components and game control variables
+      let scene, camera, renderer, controls;
+      // Player movement vectors and state flags
+      let playerVelocity = new Vector3();
+      let playerDirection = new Vector3();
+      let moveForward = false;
+      let moveBackward = false;
+      let moveLeft = false;
+      let moveRight = false;
+      let canJump = false;
+
+      // Game state variables
+      let isPaused = false; // Use a pause state instead of game over
+      let instructionsTitleElement, instructionsTextElement; // DOM elements for instructions/pause screen
+      let quotePopupElement, quoteTextElement, quoteSourceElement; // DOM elements for quote popup
+
+      // Orb Collection state
+      let collectibleOrbs = []; // Array to store active collectible orb objects
+      let orbGeometry, orbMaterial; // Shared resources for orbs
+
+      let playerShadow;
+
+      let oddities = [];
+      let nextOdditySpawnTime = 0;
+      let oddityGeometry, oddityMaterial;
+
+      // Simplex noise instance for terrain generation
+      const simplex = new SimplexNoise();
+      // Map to store active terrain chunks, keyed by "x,z" coordinates
+      const activeChunks = new Map();
+
+      // Timing variables for the game loop
+      let previousFrameTime = performance.now(); // Used for delta calculation
+      // Raycaster for various intersection tests
+      let mainRaycaster;
+      let stars; // Starfield object
+
+      // Quotes for collection popups
+      const quotes = [
+        {
+          text: "All striving comes from lack, from a dissatisfaction with one's condition, and is thus suffering as long as it is not satisfied; but no satisfaction is lasting; instead, it is only the beginning of a new striving.",
+          source: "Arthur Schopenhauer",
+        },
+        {
+          text: "Man is condemned to be free; because once thrown into the world, he is responsible for everything he does.",
+          source: "Jean-Paul Sartre",
+        },
+        {
+          text: "The struggle itself towards the heights is enough to fill a man's heart. One must imagine Sisyphus happy.",
+          source: "Albert Camus",
+        },
+        {
+          text: "Life has no meaning the moment you lose the illusion of being eternal.",
+          source: "Jean-Paul Sartre",
+        },
+        {
+          text: "To live is to suffer, to survive is to find some meaning in the suffering.",
+          source: "Friedrich Nietzsche",
+        },
+        {
+          text: "We must be willing to let go of the life we planned so as to have the life that is waiting for us.",
+          source: "Joseph Campbell",
+        },
+        {
+          text: "The only way to deal with an unfree world is to become so absolutely free that your very existence is an act of rebellion.",
+          source: "Albert Camus",
+        },
+        {
+          text: "He who has a why to live can bear almost any how.",
+          source: "Friedrich Nietzsche",
+        },
+        {
+          text: "There is only one really serious philosophical problem, and that is suicide. Judging whether life is or is not worth living amounts to answering the fundamental question of philosophy.",
+          source: "Albert Camus",
+        },
+        {
+          text: "What is the point of striving if the end is annihilation?",
+          source: "Unknown Thinker (Placeholder)",
+        },
+        {
+          text: "The greater the difficulty, the more glory in surmounting it. Skillful pilots gain their reputation from storms and tempests.",
+          source: "Epictetus",
+        },
+        {
+          text: "What man actually needs is not a tensionless state but rather the striving and struggling for some goal worthy of him.",
+          source: "Viktor Frankl",
+        },
+        {
+          text: "The mystery of human existence lies not in just staying alive, but in finding something to live for.",
+          source: "Fyodor Dostoevsky",
+        },
+        {
+          text: "Our greatest glory is not in never failing, but in rising up every time we fail.",
+          source: "Ralph Waldo Emerson",
+        },
+        {
+          text: "The human soul is hospitable, and will entertain conflicting sentiments and contradictory opinions with much impartiality.",
+          source: "George Eliot",
+        },
+        { text: "I rebel; therefore I exist.", source: "Albert Camus" },
+        {
+          text: "One does not discover new lands without consenting to lose sight of the shore for a very long time.",
+          source: "André Gide",
+        },
+        {
+          text: "The world breaks everyone, and afterward, some are strong at the broken places.",
+          source: "Ernest Hemingway",
+        },
+        {
+          text: "Do not pray for an easy life, pray for the strength to endure a difficult one.",
+          source: "Bruce Lee",
+        },
+        {
+          text: "The effort itself is a reward.",
+          source: "Seneca (paraphrased)",
+        },
+      ];
+
+      /**
+       * @function window.onload
+       * @description Entry point. Initializes UI, loads saved data, sets up scene, starts loop.
+       */
+      window.onload = function () {
+        console.log("window.onload fired.");
+        // Get references to UI elements
+        instructionsTitleElement = document.getElementById("instructionsTitle");
+        instructionsTextElement = document.getElementById("instructionsText");
+        // Removed orbCountElement, totalOrbDisplayElement, menuTotalOrbsElement
+        quotePopupElement = document.getElementById("quotePopup");
+        quoteTextElement = document.getElementById("quoteText");
+        quoteSourceElement = document.getElementById("quoteSource");
+
+        if (!instructionsTitleElement)
+          console.error("instructionsTitleElement not found!");
+
+        // Removed loadOrbs() and related UI updates
+
+        // Setup quote popup close listener
+        if (quotePopupElement) {
+          quotePopupElement.addEventListener("click", () => {
+            console.log("Quote popup clicked.");
+            quotePopupElement.style.display = "none";
+            // Re-lock controls only if the game isn't paused for other reasons
+            if (!isPaused) {
+              // Check if the game was paused by ESC, not just by the quote
+              console.log("Attempting to re-lock controls after quote.");
+              controls.lock();
+            } else {
+              console.log(
+                "Game is paused (isPaused=true), not re-locking after quote."
+              );
+            }
+          });
+        } else {
+          console.error("quotePopupElement not found!");
+        }
+
+        try {
+          console.log("Calling init().");
+          init(); // Initialize Three.js scene, controls, etc.
+          console.log("Calling animate().");
+          animate(); // Start the main game loop
+        } catch (error) {
+          console.error(
+            "Error during initialization or animation start:",
+            error
+          );
+          // Display error message on the instructions screen
+          const instructionsDiv = document.getElementById("instructions");
+          if (instructionsDiv) {
+            const errorP = document.createElement("p");
+            errorP.style.color = "red";
+            errorP.textContent =
+              "An error occurred. Please check the console (F12).";
+            instructionsDiv.appendChild(errorP);
+          }
+        }
+        console.log("window.onload finished.");
+      };
+
+      // Removed loadOrbs(), saveOrbs(), updateOrbDisplays() functions
+
+      /**
+       * @function createStarfield
+       * @description Creates a Points object representing a starry background.
+       */
+      function createStarfield() {
+        const starQty = 15000; // Increased star count
+        const starVertices = [];
+        // Increase radius significantly to ensure stars are further than fog/far plane
+        const starRadius = CHUNK_SIZE * (chunkLoadRadius + 5);
+
+        for (let i = 0; i < starQty; i++) {
+          // Create random points within a sphere
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(Math.random() * 2 - 1);
+          // Use cube root distribution for a more even volume spread
+          const r = starRadius * Math.cbrt(Math.random());
+
+          const x = r * Math.sin(phi) * Math.cos(theta);
+          const y = r * Math.sin(phi) * Math.sin(theta);
+          const z = r * Math.cos(phi);
+          starVertices.push(x, y, z);
+        }
+
+        const starsGeometry = new BufferGeometry();
+        starsGeometry.setAttribute(
+          "position",
+          new Float32BufferAttribute(starVertices, 3)
+        );
+
+        // Star material adjustments
+        const starsMaterial = new PointsMaterial({
+          color: 0xffffff,
+          size: 1.2, // Slightly smaller stars
+          sizeAttenuation: false, // Stars maintain size regardless of distance
+          transparent: true,
+          opacity: 0.8,
+          depthWrite: false, // Don't write to depth buffer (prevents interfering with terrain)
+          depthTest: true, // Still check depth buffer (so terrain occludes stars)
+        });
+
+        stars = new Points(starsGeometry, starsMaterial);
+        scene.add(stars);
+      }
+
+      /**
+       * @function initOddityResources
+       * @description Initializes shared geometry and material for the floating orb oddities.
+       */
+      function initOddityResources() {
+        oddityGeometry = new SphereGeometry(ODDITY_SIZE, 16, 16);
+        oddityMaterial = new MeshBasicMaterial({
+          color: ODDITY_COLOR,
+          transparent: true,
+          opacity: 0, // Start fully transparent
+          depthWrite: false, // Don't interfere with depth buffer
+        });
+      }
+
+      /**
+       * @function initOrbResources
+       * @description Initializes shared geometry and material for collectible orbs.
+       */
+      function initOrbResources() {
+        orbGeometry = new IcosahedronGeometry(ORB_SIZE, 0); // Simple geometric shape
+        orbMaterial = new MeshStandardMaterial({
+          color: ORB_COLOR,
+          metalness: 0.6,
+          roughness: 0.2,
+          emissive: ORB_COLOR, // Make it glow
+          emissiveIntensity: 0.5,
+        });
+      }
+
+      /**
+       * @function init
+       * @description Sets up the main Three.js scene, camera, renderer, lighting, controls, etc.
+       */
+      function init() {
+        console.log("init() started.");
+        // Scene setup
+        scene = new Scene();
+        scene.fog = new Fog(
+          0x1a232a, // Fog color should match the general background feel
+          CHUNK_SIZE * 1.5,
+          CHUNK_SIZE * (chunkLoadRadius + 1.2)
+        );
+
+        // Camera setup
+        camera = new PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          CHUNK_SIZE * (chunkLoadRadius + 6) // Increase far plane further for distant stars
+        );
+
+        // Renderer setup
+        renderer = new WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting setup
+        const hemisphereLight = new HemisphereLight(0x607d8b, 0x263238, 0.7);
+        scene.add(hemisphereLight);
+        const directionalLight = new DirectionalLight(0xb0bec5, 0.6);
+        directionalLight.position.set(75, 150, 100);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        const shadowCamSize = CHUNK_SIZE * chunkLoadRadius;
+        directionalLight.shadow.camera.near = 10;
+        directionalLight.shadow.camera.far = 350;
+        directionalLight.shadow.camera.left = -shadowCamSize;
+        directionalLight.shadow.camera.right = shadowCamSize;
+        directionalLight.shadow.camera.top = shadowCamSize;
+        directionalLight.shadow.camera.bottom = -shadowCamSize;
+        scene.add(directionalLight);
+
+        // Controls setup
+        const blocker = document.getElementById("blocker");
+        const instructions = document.getElementById("instructions");
+        controls = new PointerLockControls(camera, document.body);
+
+        // Event listener for starting/resuming the game
+        if (instructions) {
+          instructions.addEventListener("click", () => {
+            console.log(
+              "Instructions clicked. quotePopup display:",
+              quotePopupElement.style.display
+            );
+            // Only lock if the quote popup isn't showing
+            if (quotePopupElement.style.display === "none") {
+              console.log("Attempting controls.lock()");
+              controls.lock();
+            } else {
+              console.log("Quote popup is visible, not locking controls.");
+            }
+          });
+        } else {
+          console.error("Instructions element not found for click listener!");
+        }
+
+        // Event listener for when pointer lock is activated
+        controls.addEventListener("lock", () => {
+          console.log("Controls locked. Current isPaused:", isPaused);
+          blocker.style.display = "none";
+          instructions.style.display = "none";
+          quotePopupElement.style.display = "none";
+
+          startWandering(); // This function now handles if it's a fresh start or resume
+          // isPaused is set to false inside startWandering
+          console.log(
+            "After startWandering in lock event. isPaused:",
+            isPaused
+          );
+        });
+
+        // Event listener for when pointer lock is released (e.g., ESC pressed)
+        controls.addEventListener("unlock", () => {
+          console.log(
+            "Controls unlocked. quotePopup display:",
+            quotePopupElement.style.display
+          );
+          // Only show pause screen if the quote popup isn't the reason for unlock
+          if (quotePopupElement.style.display === "none") {
+            pauseWandering();
+            blocker.style.display = "flex";
+            instructions.style.display = ""; // Show instructions div
+            if (instructionsTitleElement)
+              instructionsTitleElement.textContent = "Paused";
+            if (instructionsTextElement)
+              instructionsTextElement.textContent =
+                "Click to resume your wandering.";
+            // Removed updateOrbDisplays() call from here as it's no longer needed on pause menu
+          }
+        });
+        scene.add(controls.getObject()); // Add camera (with controls) to scene
+
+        // Player Shadow setup
+        const shadowGeo = new CircleGeometry(PLAYER_RADIUS, 16);
+        const shadowMat = new MeshBasicMaterial({
+          color: 0x000000,
+          transparent: true,
+          opacity: 0.35,
+        });
+        playerShadow = new Mesh(shadowGeo, shadowMat);
+        playerShadow.rotation.x = -Math.PI / 2; // Lay flat on the ground
+        playerShadow.visible = false; // Initially hidden
+        scene.add(playerShadow);
+
+        // Create the starfield
+        createStarfield();
+        // Initialize resources for oddities and orbs
+        initOddityResources();
+        initOrbResources();
+
+        // Event listeners for player input (movement and jump)
+        document.addEventListener("keydown", onKeyDown);
+        document.addEventListener("keyup", onKeyUp);
+
+        // Initialize main raycaster for ground checks
+        mainRaycaster = new Raycaster();
+
+        // Initial camera position and terrain generation
+        camera.position.set(0, PLAYER_HEIGHT + TERRAIN_AMPLITUDE / 2, 0); // Start above terrain center
+        updateTerrain(); // Generate initial terrain chunks around the start position
+        // Removed updateOrbDisplays() call from here
+        // Set initial time for the first oddity spawn check
+        nextOdditySpawnTime =
+          performance.now() +
+          MathUtils.randFloat(
+            ODDITY_SPAWN_INTERVAL_MIN,
+            ODDITY_SPAWN_INTERVAL_MAX
+          );
+
+        console.log("init() completed.");
+      }
+
+      /**
+       * @function startWandering
+       * @description Resets the state to begin or resume a wandering session.
+       */
+      function startWandering() {
+        console.log("startWandering called. Current isPaused:", isPaused);
+        const now = performance.now();
+        let isFreshStart = !isPaused; // If not paused, it's either a fresh start or re-lock after quote
+
+        if (isFreshStart) {
+          console.log("Starting/Restarting game session.");
+          const player = controls.getObject();
+          const { height: startTerrainHeight } = getTerrainHeight(0, 0);
+          player.position.set(0, startTerrainHeight + PLAYER_HEIGHT + 5, 0);
+          camera.position.copy(player.position);
+          playerVelocity.set(0, 0, 0);
+
+          // Clear and reset oddities
+          oddities.forEach((oddity) => {
+            scene.remove(oddity.mesh);
+            if (oddity.mesh.material) oddity.mesh.material.dispose();
+          });
+          oddities = [];
+          // Clear and reset collectible orbs
+          collectibleOrbs.forEach((orb) => {
+            if (orb.mesh) scene.remove(orb.mesh);
+          });
+          collectibleOrbs = [];
+
+          nextOdditySpawnTime =
+            now +
+            MathUtils.randFloat(
+              ODDITY_SPAWN_INTERVAL_MIN,
+              ODDITY_SPAWN_INTERVAL_MAX
+            );
+          // Removed currentOrbCount reset as it's not displayed
+
+          if (instructionsTitleElement)
+            instructionsTitleElement.textContent = "Endless Wandering";
+          if (instructionsTextElement)
+            instructionsTextElement.innerHTML =
+              "Click to begin. Wander the infinite landscape.<br>Collect the glowing orbs to ponder.<br>Observe the anomalies.";
+        } else {
+          // Resuming from a previously paused state (isPaused was true)
+          console.log("Resuming from pause.");
+          // Removed pauseStartTime and related logic as time is not tracked
+          // Adjust next oddity spawn time by how long we were paused (approximate with previousFrameTime)
+          const pausedDuration = now - previousFrameTime; // Approximation of pause duration
+          nextOdditySpawnTime += pausedDuration;
+        }
+
+        isPaused = false; // Game is now active
+        if (playerShadow) playerShadow.visible = true;
+
+        updateTerrain(); // This will also spawn initial orbs if it's a fresh start
+        // Removed updateOrbDisplays()
+        previousFrameTime = now; // Crucial: Reset previousFrameTime for the animation loop's delta calculation
+        console.log(
+          "Wandering started/resumed. previousFrameTime for animate:",
+          previousFrameTime
+        );
+      }
+
+      /**
+       * @function pauseWandering
+       * @description Handles the pausing logic.
+       */
+      function pauseWandering() {
+        console.log("pauseWandering called. Current isPaused:", isPaused);
+        if (isPaused) {
+          // Already paused
+          console.log("PauseWandering: Already paused. Returning.");
+          return;
+        }
+
+        isPaused = true; // Set paused state
+        // Removed pauseStartTime
+        console.log("Game paused.");
+
+        // Removed time-related saving and orb saving as it's not displayed
+
+        if (playerShadow) playerShadow.visible = false;
+      }
+
+      /**
+       * @function getTerrainHeight
+       * @description Calculates the terrain height at a given world (x, z) coordinate using Simplex noise.
+       * @param {number} worldX - The world x-coordinate.
+       * @param {number} worldZ - The world z-coordinate.
+       * @returns {{height: number, normalizedHeight: number}} Object containing scaled height and normalized height [-1, 1]. Returns {0, 0} if input is invalid.
+       */
+      function getTerrainHeight(worldX, worldZ) {
+        // Added check for invalid input which could cause NaN issues
+        if (isNaN(worldX) || isNaN(worldZ)) {
+          // console.warn("Invalid coordinates passed to getTerrainHeight:", worldX, worldZ); // Reduce console noise
+          return { height: 0, normalizedHeight: 0 };
+        }
+
+        let totalHeight = 0;
+        let frequency = 1.0 / NOISE_SCALE;
+        let amplitude = 1.0;
+        let maxAmplitude = 0; // Used to normalize the sum of amplitudes
+
+        for (let i = 0; i < TERRAIN_OCTAVES; i++) {
+          totalHeight +=
+            simplex.noise2D(worldX * frequency, worldZ * frequency) * amplitude;
+          maxAmplitude += amplitude;
+          amplitude *= TERRAIN_PERSISTENCE;
+          frequency *= TERRAIN_LACUNARITY;
+        }
+        // Calculate normalized height (value between -1 and 1)
+        // Avoid division by zero if maxAmplitude is somehow 0
+        const normalizedHeight =
+          maxAmplitude === 0 ? 0 : totalHeight / maxAmplitude;
+        // Calculate scaled height based on amplitude
+        const height = normalizedHeight * TERRAIN_AMPLITUDE;
+        return { height, normalizedHeight };
+      }
+
+      /**
+       * @function createRandomObject
+       * @description Creates a decorative object with a random geometry and material.
+       * @returns {THREE.Mesh} The created decorative mesh.
+       */
+      function createRandomObject() {
+        const geometry =
+          OBJECT_GEOMETRIES[
+            Math.floor(Math.random() * OBJECT_GEOMETRIES.length)
+          ]();
+        const material =
+          OBJECT_MATERIALS[Math.floor(Math.random() * OBJECT_MATERIALS.length)];
+        const objectMesh = new Mesh(geometry, material);
+        objectMesh.castShadow = true;
+        objectMesh.receiveShadow = true;
+        objectMesh.userData.isRandomObject = true; // Mark for easy disposal when unloading chunks
+        return objectMesh;
+      }
+
+      /**
+       * @function createTerrainChunk
+       * @description Generates terrain chunk, applies vertex colors, places decorative objects and collectible orbs.
+       * @param {number} chunkX - The x-coordinate of the chunk in the chunk grid.
+       * @param {number} chunkZ - The z-coordinate of the chunk in the chunk grid.
+       * @returns {THREE.Mesh} The generated terrain chunk mesh with objects.
+       */
+      function createTerrainChunk(chunkX, chunkZ) {
+        // Create plane geometry for the chunk
+        const geometry = new PlaneGeometry(
+          CHUNK_SIZE,
+          CHUNK_SIZE,
+          CHUNK_SEGMENTS,
+          CHUNK_SEGMENTS
+        );
+        const positions = geometry.attributes.position.array; // Get vertex position buffer
+        const colors = []; // Array to store vertex colors
+
+        const colorLow = new Color(0x37474f); // Dark Slate Grey/Blue
+        const colorMid = new Color(0x78909c); // Blue Grey
+        const colorHigh = new Color(0xeceff1); // Light Blue Grey / Almost White
+
+        let vertexBufferIndex = 0;
+        // Iterate over vertices to set height and color based on noise
+        for (let vy = 0; vy <= CHUNK_SEGMENTS; vy++) {
+          for (let vx = 0; vx <= CHUNK_SEGMENTS; vx++) {
+            const localX = (vx / CHUNK_SEGMENTS - 0.5) * CHUNK_SIZE;
+            const localPlaneY = (vy / CHUNK_SEGMENTS - 0.5) * CHUNK_SIZE; // This is local Z before rotation
+            const worldX = chunkX * CHUNK_SIZE + localX;
+            const worldZ = chunkZ * CHUNK_SIZE + localPlaneY;
+
+            // Get height data (includes normalized height)
+            const { height, normalizedHeight } = getTerrainHeight(
+              worldX,
+              worldZ
+            );
+
+            // Set the Z coordinate (height) in the buffer (plane is initially XY)
+            positions[vertexBufferIndex * 3 + 2] = height;
+
+            // --- Place Collectible Orb ---
+            // Avoid placing on the very edges of the chunk to prevent overlap issues
+            if (
+              vx > 0 &&
+              vx < CHUNK_SEGMENTS &&
+              vy > 0 &&
+              vy < CHUNK_SEGMENTS
+            ) {
+              if (Math.random() < ORB_SPAWN_PROBABILITY) {
+                if (orbGeometry && orbMaterial) {
+                  // Ensure resources are initialized
+                  const orbMesh = new Mesh(orbGeometry, orbMaterial);
+                  orbMesh.position.set(
+                    worldX,
+                    height + ORB_HOVER_HEIGHT,
+                    worldZ
+                  ); // Use world coords for positioning in scene
+                  orbMesh.castShadow = true;
+                  orbMesh.userData.isCollectibleOrb = true; // Mark for identification
+                  collectibleOrbs.push({ mesh: orbMesh }); // Add to global list
+                  scene.add(orbMesh); // Add directly to the scene
+                } else {
+                  console.warn(
+                    "Orb resources not ready for spawning in createTerrainChunk."
+                  );
+                }
+              }
+            }
+
+            // Calculate vertex color based on normalized height [-1, 1]
+            const color = new Color();
+            if (normalizedHeight < 0) {
+              // Lerp between low and mid
+              color.lerpColors(colorLow, colorMid, normalizedHeight + 1); // Map [-1, 0] to [0, 1]
+            } else {
+              // Lerp between mid and high
+              color.lerpColors(colorMid, colorHigh, normalizedHeight); // Map [0, 1] to [0, 1]
+            }
+            colors.push(color.r, color.g, color.b);
+
+            vertexBufferIndex++;
+          }
+        }
+        geometry.attributes.position.needsUpdate = true; // Notify Three.js of buffer changes
+        // Add color attribute to geometry
+        geometry.setAttribute("color", new Float32BufferAttribute(colors, 3));
+        geometry.computeVertexNormals(); // Recalculate normals for lighting
+        geometry.rotateX(-MathUtils.degToRad(90)); // Rotate plane to be flat on XZ
+
+        // Create material for the terrain, enabling vertex colors
+        const material = new MeshStandardMaterial({
+          vertexColors: true, // Enable vertex colors
+          roughness: 0.9,
+          metalness: 0.1,
+          flatShading: false, // Use smooth shading
+        });
+        // Create the chunk mesh
+        const chunkMesh = new Mesh(geometry, material);
+        chunkMesh.position.set(chunkX * CHUNK_SIZE, 0, chunkZ * CHUNK_SIZE); // Position chunk
+        chunkMesh.receiveShadow = true;
+        chunkMesh.castShadow = true; // Terrain casts shadows
+
+        // Add decorative objects (now that chunkMesh is created and positioned)
+        // Re-iterate to add decorative objects to the mesh
+        for (let vy = 1; vy < CHUNK_SEGMENTS; vy++) {
+          // Avoid edges
+          for (let vx = 1; vx < CHUNK_SEGMENTS; vx++) {
+            if (Math.random() < OBJECT_SPAWN_PROBABILITY) {
+              const localX = (vx / CHUNK_SEGMENTS - 0.5) * CHUNK_SIZE;
+              const localZ = (vy / CHUNK_SEGMENTS - 0.5) * CHUNK_SIZE; // After rotation, this is Z
+              const worldX = chunkX * CHUNK_SIZE + localX;
+              const worldPosZ = chunkZ * CHUNK_SIZE + localZ;
+              const { height } = getTerrainHeight(worldX, worldPosZ);
+
+              const randomObject = createRandomObject();
+              // Position relative to the chunk's origin
+              randomObject.position.set(
+                localX,
+                height + MAX_OBJECT_SIZE / 2,
+                localZ
+              );
+              chunkMesh.add(randomObject); // Add as child of chunk mesh
+            }
+          }
+        }
+
+        return chunkMesh;
+      }
+
+      /**
+       * @function updateTerrain
+       * @description Manages dynamic loading/unloading of terrain chunks and associated objects/orbs.
+       */
+      function updateTerrain() {
+        const player = controls.getObject();
+        const playerPos = player.position; // Cache player position
+
+        const currentChunkX = Math.floor(
+          (playerPos.x + CHUNK_SIZE / 2) / CHUNK_SIZE
+        );
+        const currentChunkZ = Math.floor(
+          (playerPos.z + CHUNK_SIZE / 2) / CHUNK_SIZE
+        );
+
+        const chunksToRemoveKeys = new Set(activeChunks.keys()); // Start assuming all chunks might be removed
+        const activeChunkKeys = new Set(); // Keep track of chunks that should be active
+
+        // Load new chunks in a grid around the player
+        for (let i = -chunkLoadRadius; i <= chunkLoadRadius; i++) {
+          for (let j = -chunkLoadRadius; j <= chunkLoadRadius; j++) {
+            const cx = currentChunkX + i;
+            const cz = currentChunkZ + j;
+            const chunkKey = `${cx},${cz}`;
+            activeChunkKeys.add(chunkKey); // Mark this chunk as active
+
+            if (!activeChunks.has(chunkKey)) {
+              // If chunk isn't loaded, create and add it
+              const newChunk = createTerrainChunk(cx, cz); // This now also spawns orbs
+              scene.add(newChunk);
+              activeChunks.set(chunkKey, newChunk);
+            }
+            chunksToRemoveKeys.delete(chunkKey); // This chunk is active, don't remove it
+          }
+        }
+
+        // Unload terrain chunks that are now out of range
+        chunksToRemoveKeys.forEach((chunkKey) => {
+          const chunkToRemove = activeChunks.get(chunkKey);
+          if (chunkToRemove) {
+            // Dispose of decorative objects (children of the chunk)
+            const objectsToDispose = [];
+            chunkToRemove.traverse((child) => {
+              if (child.userData.isRandomObject && child.isMesh) {
+                objectsToDispose.push(child);
+              }
+            });
+            objectsToDispose.forEach((obj) => {
+              if (obj.geometry) obj.geometry.dispose();
+              if (obj.material) {
+                if (Array.isArray(obj.material))
+                  obj.material.forEach((m) => m.dispose());
+                else obj.material.dispose();
+              }
+              chunkToRemove.remove(obj); // Remove from chunk's children
+            });
+
+            // Dispose of the chunk itself
+            scene.remove(chunkToRemove);
+            if (chunkToRemove.geometry) chunkToRemove.geometry.dispose();
+            if (chunkToRemove.material) {
+              if (Array.isArray(chunkToRemove.material))
+                chunkToRemove.material.forEach((m) => m.dispose());
+              else chunkToRemove.material.dispose();
+            }
+            activeChunks.delete(chunkKey); // Remove from active map
+          }
+        });
+
+        // Unload collectible orbs that are too far away (based on distance)
+        for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
+          const orb = collectibleOrbs[i];
+          const distanceToPlayer = playerPos.distanceTo(orb.mesh.position);
+
+          // If the orb is beyond the unload distance, remove it
+          if (distanceToPlayer > ORB_UNLOAD_DISTANCE) {
+            scene.remove(orb.mesh);
+            // No need to dispose shared geometry/material
+            collectibleOrbs.splice(i, 1);
+          }
+        }
+      }
+
+      /**
+       * @function spawnOddity
+       * @description Creates a new floating orb oddity near the player.
+       */
+      function spawnOddity() {
+        const playerPosition = controls.getObject().position;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = MathUtils.randFloat(
+          ODDITY_SPAWN_MIN_DIST,
+          ODDITY_SPAWN_MAX_DIST
+        );
+
+        const spawnX = playerPosition.x + Math.cos(angle) * distance;
+        const spawnZ = playerPosition.z + Math.sin(angle) * distance;
+        // Get terrain height at spawn location
+        const { height: terrainHeight } = getTerrainHeight(spawnX, spawnZ);
+        const spawnY =
+          terrainHeight +
+          ODDITY_HOVER_HEIGHT +
+          MathUtils.randFloat(-ODDITY_BOB_AMOUNT, ODDITY_BOB_AMOUNT); // Add hover height + random initial bob
+
+        // Create mesh using shared resources, clone material for unique opacity/color later if needed
+        if (!oddityGeometry || !oddityMaterial) {
+          console.warn(
+            "Oddity resources not initialized before spawnOddity call."
+          );
+          return;
+        }
+        const oddityMesh = new Mesh(oddityGeometry, oddityMaterial.clone()); // Clone material
+        oddityMesh.position.set(spawnX, spawnY, spawnZ);
+
+        const oddity = {
+          mesh: oddityMesh,
+          spawnTime: performance.now(),
+          baseY: spawnY, // Store base height for bobbing
+        };
+
+        oddities.push(oddity);
+        scene.add(oddityMesh);
+
+        // Schedule next spawn check
+        nextOdditySpawnTime =
+          performance.now() +
+          MathUtils.randFloat(
+            ODDITY_SPAWN_INTERVAL_MIN,
+            ODDITY_SPAWN_INTERVAL_MAX
+          );
+      }
+
+      /**
+       * @function updateOddities
+       * @description Updates the position, opacity, and lifetime of active oddities.
+       * @param {number} delta - Time elapsed since the last frame.
+       * @param {number} time - Current time from performance.now().
+       */
+      function updateOddities(delta, time) {
+        // Check if it's time to spawn a new oddity
+        if (time > nextOdditySpawnTime) {
+          spawnOddity();
+        }
+
+        // Iterate backwards for safe removal
+        for (let i = oddities.length - 1; i >= 0; i--) {
+          const oddity = oddities[i];
+          const elapsedTime = time - oddity.spawnTime;
+
+          // Handle fade in/out and lifetime
+          let opacity = 0;
+          if (elapsedTime < ODDITY_FADE_TIME) {
+            // Fade in
+            opacity = elapsedTime / ODDITY_FADE_TIME;
+          } else if (elapsedTime < ODDITY_DURATION - ODDITY_FADE_TIME) {
+            // Fully visible
+            opacity = 1.0;
+          } else if (elapsedTime < ODDITY_DURATION) {
+            // Fade out
+            opacity =
+              1.0 -
+              (elapsedTime - (ODDITY_DURATION - ODDITY_FADE_TIME)) /
+                ODDITY_FADE_TIME;
+          } else {
+            // Ensure opacity is 0 if past duration before removal
+            opacity = 0;
+          }
+
+          // Apply opacity (ensure material is unique per oddity)
+          if (oddity.mesh.material) {
+            // Check if material exists before accessing
+            oddity.mesh.material.opacity = Math.max(0, opacity); // Clamp opacity >= 0
+          }
+
+          // Remove oddity if duration expired
+          if (elapsedTime >= ODDITY_DURATION) {
+            scene.remove(oddity.mesh);
+            // Dispose of the cloned material
+            if (oddity.mesh.material) oddity.mesh.material.dispose();
+            oddities.splice(i, 1); // Remove from array
+            continue; // Skip to next oddity
+          }
+
+          // Add bobbing motion
+          oddity.mesh.position.y =
+            oddity.baseY +
+            Math.sin(time * ODDITY_BOB_SPEED * 0.001) * ODDITY_BOB_AMOUNT;
+        }
+      }
+
+      /**
+       * @function checkOrbCollisions
+       * @description Checks for collisions between the player and collectible orbs.
+       */
+      function checkOrbCollisions() {
+        const playerPosition = controls.getObject().position;
+        for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
+          const orb = collectibleOrbs[i];
+          if (!orb.mesh) {
+            // Safety check if mesh was somehow removed elsewhere
+            collectibleOrbs.splice(i, 1);
+            continue;
+          }
+          const distance = playerPosition.distanceTo(orb.mesh.position);
+
+          if (distance < ORB_COLLECTION_RADIUS) {
+            // Collision detected - collect the orb
+            collectOrb(i);
+            break; // Only collect one orb per frame max
+          }
+        }
+      }
+
+      /**
+       * @function collectOrb
+       * @description Handles the logic when an orb is collected.
+       * @param {number} index - The index of the orb in the collectibleOrbs array.
+       */
+      function collectOrb(index) {
+        const orb = collectibleOrbs[index];
+
+        // Remove orb from scene and array
+        scene.remove(orb.mesh);
+        collectibleOrbs.splice(index, 1);
+
+        // Removed orb counting logic
+
+        // Select and display quote
+        const quote = quotes[Math.floor(Math.random() * quotes.length)];
+        if (quoteTextElement) quoteTextElement.textContent = `"${quote.text}"`;
+        if (quoteSourceElement)
+          quoteSourceElement.textContent = `- ${quote.source}`;
+        if (quotePopupElement) quotePopupElement.style.display = "flex"; // Show popup
+
+        // Unlock controls
+        controls.unlock();
+
+        console.log("Collected orb!");
+      }
+
+      /**
+       * @function handlePlayerMovement
+       * @description Updates player position based on input, physics, and terrain collision.
+       * @param {number} delta - Time elapsed since the last frame.
+       */
+      function handlePlayerMovement(delta) {
+        const cam = controls.getObject(); // The camera object controlled by PointerLock
+
+        // Skip horizontal movement and terrain updates if paused or quote popup is visible
+        if (
+          isPaused ||
+          (quotePopupElement && quotePopupElement.style.display !== "none")
+        ) {
+          // Still apply gravity when paused/popup visible
+          playerVelocity.y -= GRAVITY * delta; // delta is 0 if paused, applies gravity if popup visible
+          cam.position.y += playerVelocity.y * delta;
+
+          // Basic ground collision check
+          const { height: estimatedGroundYFeet } = getTerrainHeight(
+            cam.position.x,
+            cam.position.z
+          );
+          const estimatedGroundY = estimatedGroundYFeet + PLAYER_HEIGHT;
+          if (cam.position.y < estimatedGroundY) {
+            cam.position.y = estimatedGroundY;
+            playerVelocity.y = 0;
+          }
+          // Update starfield position even when paused/popup visible
+          if (stars) {
+            stars.position.copy(cam.position);
+          }
+          return; // Don't process horizontal movement or terrain updates
+        }
+
+        // --- Normal Movement Logic (only runs if not paused and no popup) ---
+        const terrainMeshes = Array.from(activeChunks.values()); // Get active terrain for collision
+
+        // Apply damping (friction) to XZ movement
+        playerVelocity.x -= playerVelocity.x * PLAYER_DAMPING * delta;
+        playerVelocity.z -= playerVelocity.z * PLAYER_DAMPING * delta;
+
+        // Get movement direction from input flags
+        playerDirection.z = Number(moveForward) - Number(moveBackward);
+        playerDirection.x = Number(moveRight) - Number(moveLeft); // Corrected: D is right (+X), A is left (-X)
+        playerDirection.normalize(); // Ensure consistent speed diagonally
+
+        // Apply acceleration based on input
+        if (moveForward || moveBackward)
+          playerVelocity.z -= playerDirection.z * PLAYER_ACCELERATION * delta; // W/S affect Z velocity relative to camera
+        if (moveLeft || moveRight)
+          playerVelocity.x += playerDirection.x * PLAYER_ACCELERATION * delta; // A/D affect X velocity relative to camera
+
+        // Move the PointerLockControls object using its built-in methods
+        controls.moveForward(-playerVelocity.z * delta); // Move along camera's forward/backward axis
+        controls.moveRight(playerVelocity.x * delta); // Move along camera's right/left axis
+
+        // Handle vertical movement (gravity and jumping)
+        cam.position.y += playerVelocity.y * delta; // Apply vertical velocity
+        playerVelocity.y -= GRAVITY * delta; // Apply gravity
+
+        // Ground collision detection using raycasting
+        mainRaycaster.ray.origin.copy(cam.position);
+        mainRaycaster.ray.direction.set(0, -1, 0); // Ray points straight down
+        mainRaycaster.near = 0;
+        mainRaycaster.far = PLAYER_HEIGHT + 0.2; // Ray length just below player's feet
+        const intersections = mainRaycaster.intersectObjects(
+          terrainMeshes,
+          false // Don't check descendants (terrain chunks have no important descendants for this)
+        );
+
+        if (intersections.length > 0) {
+          // If ray hits ground
+          const groundPoint = intersections[0].point;
+          if (cam.position.y < groundPoint.y + PLAYER_HEIGHT) {
+            // If player is below or at ground level
+            cam.position.y = groundPoint.y + PLAYER_HEIGHT; // Snap to ground
+            playerVelocity.y = 0; // Stop falling
+            canJump = true; // Allow jumping
+          }
+        } else {
+          // If ray doesn't hit ground (e.g., over a cliff)
+          canJump = false;
+          // Fallback check to prevent falling through map in rare cases
+          const { height: estimatedPlayerFeetY } = getTerrainHeight(
+            cam.position.x,
+            cam.position.z
+          );
+          const estimatedPlayerEyeY = estimatedPlayerFeetY + PLAYER_HEIGHT;
+          if (cam.position.y < estimatedPlayerEyeY - CHUNK_SIZE * 2) {
+            // If fallen very far
+            console.warn("Player fell far below terrain, resetting position.");
+            cam.position.y = estimatedPlayerEyeY + 5; // Teleport up
+            playerVelocity.y = 0;
+            canJump = true;
+          }
+        }
+
+        // Update player shadow position
+        if (playerShadow && controls.isLocked) {
+          // Raycast from slightly above player's head downwards
+          const shadowRayOrigin = new Vector3(
+            cam.position.x,
+            cam.position.y + PLAYER_HEIGHT, // Start ray high enough
+            cam.position.z
+          );
+          mainRaycaster.set(shadowRayOrigin, new Vector3(0, -1, 0));
+          mainRaycaster.near = 0;
+          // Make ray long enough to hit ground even if player is high up
+          mainRaycaster.far = PLAYER_HEIGHT * 2 + TERRAIN_AMPLITUDE + 10;
+
+          const shadowHitIntersections = mainRaycaster.intersectObjects(
+            terrainMeshes,
+            false
+          );
+          if (shadowHitIntersections.length > 0) {
+            // Place shadow slightly above the intersection point
+            playerShadow.position.set(
+              cam.position.x,
+              shadowHitIntersections[0].point.y + 0.05, // Small offset to prevent z-fighting
+              cam.position.z
+            );
+            playerShadow.visible = true;
+          } else {
+            playerShadow.visible = false; // Hide shadow if no ground found below
+          }
+        } else if (playerShadow) {
+          playerShadow.visible = false; // Ensure shadow is hidden if not locked
+        }
+
+        // Update terrain chunks based on new player position
+        updateTerrain();
+
+        // Update starfield position to follow camera (keeps stars infinitely distant)
+        if (stars) {
+          stars.position.copy(cam.position);
+        }
+
+        // Check for orb collisions
+        checkOrbCollisions();
+      }
+
+      /**
+       * @function onKeyDown
+       * @description Handles key down events for player movement and jumping.
+       * @param {KeyboardEvent} event - The keydown event.
+       */
+      function onKeyDown(event) {
+        // Ignore movement keys if quote popup is visible
+        if (quotePopupElement && quotePopupElement.style.display !== "none")
+          return;
+
+        switch (event.code) {
+          case "ArrowUp":
+          case "KeyW":
+            moveForward = true;
+            break;
+          case "ArrowLeft":
+          case "KeyA":
+            moveLeft = true;
+            break;
+          case "ArrowDown":
+          case "KeyS":
+            moveBackward = true;
+            break;
+          case "ArrowRight":
+          case "KeyD":
+            moveRight = true;
+            break;
+          case "Space":
+            if (canJump && controls.isLocked) {
+              // Can only jump if grounded and active
+              playerVelocity.y = PLAYER_JUMP_FORCE;
+              canJump = false; // Prevent double jump until grounded again
+            }
+            break;
+        }
+      }
+
+      /**
+       * @function onKeyUp
+       * @description Handles key up events to stop player movement.
+       * @param {KeyboardEvent} event - The keyup event.
+       */
+      function onKeyUp(event) {
+        switch (event.code) {
+          case "ArrowUp":
+          case "KeyW":
+            moveForward = false;
+            break;
+          case "ArrowLeft":
+          case "KeyA":
+            moveLeft = false;
+            break;
+          case "ArrowDown":
+          case "KeyS":
+            moveBackward = false;
+            break;
+          case "ArrowRight":
+          case "KeyD":
+            moveRight = false;
+            break;
+        }
+      }
+
+      /**
+       * @function window.onresize (event listener)
+       * @description Handles window resize events to adjust camera aspect ratio and renderer size.
+       */
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      /**
+       * @function animate
+       * @description The main game loop. Updates player movement, time, oddities, and renders the scene.
+       */
+      function animate() {
+        requestAnimationFrame(animate); // Request the next frame
+
+        const time = performance.now();
+        // Calculate delta time, ensuring it's 0 if paused or quote popup is visible
+        const delta =
+          isPaused ||
+          (quotePopupElement && quotePopupElement.style.display !== "none")
+            ? 0
+            : Math.min((time - previousFrameTime) / 1000, 0.1);
+
+        // Update player movement (handles gravity when paused/popup, full movement otherwise)
+        handlePlayerMovement(delta);
+
+        // Update oddities only if not paused/popup visible and delta is positive
+        if (delta > 0) {
+          // delta > 0 implies not paused and no quote popup
+          updateOddities(delta, time);
+        }
+
+        // Removed wandering time display update
+
+        // Render the scene unconditionally
+        try {
+          renderer.render(scene, camera);
+        } catch (e) {
+          console.error("Error during render:", e);
+          // Consider stopping animation if render fails repeatedly
+          return;
+        }
+
+        // Update previousFrameTime only if not paused and no popup
+        if (delta > 0) {
+          // delta > 0 implies not paused and no quote popup
+          previousFrameTime = time;
+        }
+      }
+      console.log("Module script ended.");
+    </script>
+  </body>
+</html>
