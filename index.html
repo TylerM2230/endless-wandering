@@ -157,6 +157,7 @@
         BufferAttribute, // Needed for vertex colors
         IcosahedronGeometry, // For collectible orbs
         PointLight, // For orb glow
+        Box3, // For AABB collision detection
       } from "three";
       // Import PointerLockControls for first-person camera movement
       import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
@@ -178,7 +179,8 @@
       const PLAYER_DAMPING = 10.0; // Rate at which player speed decreases (friction)
       const PLAYER_JUMP_FORCE = 8.0; // Initial upward velocity on jump
       const GRAVITY = 25.0; // Downward acceleration due to gravity
-      const PLAYER_RADIUS = 0.5; // Radius for player collision detection
+      const PLAYER_RADIUS = 0.4; // Slightly reduced radius for easier navigation
+      const PLAYER_EYES_OFFSET = PLAYER_HEIGHT * 0.9; // Position of camera relative to player base
 
       // Orb Collection state (depends on CHUNK_SIZE and chunkLoadRadius)
       const ORB_SPAWN_PROBABILITY = 0.0005; // Decreased spawn rate
@@ -246,6 +248,7 @@
       const ODDITY_HOVER_HEIGHT = 3.0;
       const ODDITY_BOB_SPEED = 1.5;
       const ODDITY_BOB_AMOUNT = 0.3;
+      const COLLISION_EPSILON = 0.001; // Reduced epsilon for less jarring knockback
 
       // --- Global Variables (Scene, Game State, etc.) ---
       // Core Three.js components and game control variables
@@ -269,6 +272,13 @@
       let orbGeometry, orbMaterial; // Shared resources for orbs
 
       let playerShadow;
+      let playerBoundingBox = new Box3(); // Initialize player's bounding box once
+      // Player's AABB dimensions (width, height, depth)
+      const playerBoxDimensions = new Vector3(
+        PLAYER_RADIUS * 2,
+        PLAYER_HEIGHT,
+        PLAYER_RADIUS * 2
+      );
 
       let oddities = [];
       let nextOdditySpawnTime = 0;
@@ -375,15 +385,12 @@
         // Get references to UI elements
         instructionsTitleElement = document.getElementById("instructionsTitle");
         instructionsTextElement = document.getElementById("instructionsText");
-        // Removed orbCountElement, totalOrbDisplayElement, menuTotalOrbsElement
         quotePopupElement = document.getElementById("quotePopup");
         quoteTextElement = document.getElementById("quoteText");
         quoteSourceElement = document.getElementById("quoteSource");
 
         if (!instructionsTitleElement)
           console.error("instructionsTitleElement not found!");
-
-        // Removed loadOrbs() and related UI updates
 
         // Setup quote popup close listener
         if (quotePopupElement) {
@@ -427,8 +434,6 @@
         }
         console.log("window.onload finished.");
       };
-
-      // Removed loadOrbs(), saveOrbs(), updateOrbDisplays() functions
 
       /**
        * @function createStarfield
@@ -524,6 +529,8 @@
           0.1,
           CHUNK_SIZE * (chunkLoadRadius + 6) // Increase far plane further for distant stars
         );
+        // Camera's local Y position (eye height above the player's base)
+        camera.position.y = PLAYER_EYES_OFFSET;
 
         // Renderer setup
         renderer = new WebGLRenderer({ antialias: true });
@@ -553,6 +560,8 @@
         // Controls setup
         const blocker = document.getElementById("blocker");
         const instructions = document.getElementById("instructions");
+        // PointerLockControls manipulates the camera directly.
+        // controls.getObject() will return the camera.
         controls = new PointerLockControls(camera, document.body);
 
         // Event listener for starting/resuming the game
@@ -605,10 +614,9 @@
             if (instructionsTextElement)
               instructionsTextElement.textContent =
                 "Click to resume your wandering.";
-            // Removed updateOrbDisplays() call from here as it's no longer needed on pause menu
           }
         });
-        scene.add(controls.getObject()); // Add camera (with controls) to scene
+        scene.add(controls.getObject()); // Add player (which is the camera group managed by controls) to scene
 
         // Player Shadow setup
         const shadowGeo = new CircleGeometry(PLAYER_RADIUS, 16);
@@ -635,10 +643,13 @@
         // Initialize main raycaster for ground checks
         mainRaycaster = new Raycaster();
 
-        // Initial camera position and terrain generation
-        camera.position.set(0, PLAYER_HEIGHT + TERRAIN_AMPLITUDE / 2, 0); // Start above terrain center
+        // Initial player (camera) position
+        const { height: initialGroundHeight } = getTerrainHeight(0, 0);
+        controls
+          .getObject()
+          .position.set(0, initialGroundHeight + PLAYER_EYES_OFFSET, 0); // Set camera's world Y
+
         updateTerrain(); // Generate initial terrain chunks around the start position
-        // Removed updateOrbDisplays() call from here
         // Set initial time for the first oddity spawn check
         nextOdditySpawnTime =
           performance.now() +
@@ -661,10 +672,13 @@
 
         if (isFreshStart) {
           console.log("Starting/Restarting game session.");
-          const player = controls.getObject();
+          const playerCamera = controls.getObject(); // This is the camera
           const { height: startTerrainHeight } = getTerrainHeight(0, 0);
-          player.position.set(0, startTerrainHeight + PLAYER_HEIGHT + 5, 0);
-          camera.position.copy(player.position);
+          playerCamera.position.set(
+            0,
+            startTerrainHeight + PLAYER_EYES_OFFSET,
+            0
+          ); // Set camera's world Y
           playerVelocity.set(0, 0, 0);
 
           // Clear and reset oddities
@@ -685,7 +699,6 @@
               ODDITY_SPAWN_INTERVAL_MIN,
               ODDITY_SPAWN_INTERVAL_MAX
             );
-          // Removed currentOrbCount reset as it's not displayed
 
           if (instructionsTitleElement)
             instructionsTitleElement.textContent = "Endless Wandering";
@@ -695,8 +708,6 @@
         } else {
           // Resuming from a previously paused state (isPaused was true)
           console.log("Resuming from pause.");
-          // Removed pauseStartTime and related logic as time is not tracked
-          // Adjust next oddity spawn time by how long we were paused (approximate with previousFrameTime)
           const pausedDuration = now - previousFrameTime; // Approximation of pause duration
           nextOdditySpawnTime += pausedDuration;
         }
@@ -705,7 +716,6 @@
         if (playerShadow) playerShadow.visible = true;
 
         updateTerrain(); // This will also spawn initial orbs if it's a fresh start
-        // Removed updateOrbDisplays()
         previousFrameTime = now; // Crucial: Reset previousFrameTime for the animation loop's delta calculation
         console.log(
           "Wandering started/resumed. previousFrameTime for animate:",
@@ -726,10 +736,7 @@
         }
 
         isPaused = true; // Set paused state
-        // Removed pauseStartTime
         console.log("Game paused.");
-
-        // Removed time-related saving and orb saving as it's not displayed
 
         if (playerShadow) playerShadow.visible = false;
       }
@@ -922,8 +929,8 @@
        * @description Manages dynamic loading/unloading of terrain chunks and associated objects/orbs.
        */
       function updateTerrain() {
-        const player = controls.getObject();
-        const playerPos = player.position; // Cache player position
+        const playerCamera = controls.getObject(); // This is the camera
+        const playerPos = playerCamera.position; // Use camera's world position
 
         const currentChunkX = Math.floor(
           (playerPos.x + CHUNK_SIZE / 2) / CHUNK_SIZE
@@ -1005,7 +1012,9 @@
        * @description Creates a new floating orb oddity near the player.
        */
       function spawnOddity() {
-        const playerPosition = controls.getObject().position;
+        const playerCamera = controls.getObject(); // This is the camera
+        const playerPosition = playerCamera.position;
+
         const angle = Math.random() * Math.PI * 2;
         const distance = MathUtils.randFloat(
           ODDITY_SPAWN_MIN_DIST,
@@ -1112,7 +1121,9 @@
        * @description Checks for collisions between the player and collectible orbs.
        */
       function checkOrbCollisions() {
-        const playerPosition = controls.getObject().position;
+        const playerCamera = controls.getObject(); // This is the camera
+        const playerPosition = playerCamera.position; // Use camera's world position for distance check
+
         for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
           const orb = collectibleOrbs[i];
           if (!orb.mesh) {
@@ -1120,6 +1131,8 @@
             collectibleOrbs.splice(i, 1);
             continue;
           }
+          // Check distance from player's eye level to orb center.
+          // For more accuracy, you might check distance from player's base.
           const distance = playerPosition.distanceTo(orb.mesh.position);
 
           if (distance < ORB_COLLECTION_RADIUS) {
@@ -1142,8 +1155,6 @@
         scene.remove(orb.mesh);
         collectibleOrbs.splice(index, 1);
 
-        // Removed orb counting logic
-
         // Select and display quote
         const quote = quotes[Math.floor(Math.random() * quotes.length)];
         if (quoteTextElement) quoteTextElement.textContent = `"${quote.text}"`;
@@ -1159,131 +1170,289 @@
 
       /**
        * @function handlePlayerMovement
-       * @description Updates player position based on input, physics, and terrain collision.
+       * @description Updates player position based on input, physics, and terrain/object collision.
        * @param {number} delta - Time elapsed since the last frame.
        */
       function handlePlayerMovement(delta) {
-        const cam = controls.getObject(); // The camera object controlled by PointerLock
+        const playerCamera = controls.getObject(); // This is the camera. Its position is the eye-level.
 
-        // Skip horizontal movement and terrain updates if paused or quote popup is visible
+        // Skip movement if paused or quote popup is visible
         if (
           isPaused ||
           (quotePopupElement && quotePopupElement.style.display !== "none")
         ) {
           // Still apply gravity when paused/popup visible
-          playerVelocity.y -= GRAVITY * delta; // delta is 0 if paused, applies gravity if popup visible
-          cam.position.y += playerVelocity.y * delta;
+          playerVelocity.y -= GRAVITY * delta;
+          playerCamera.position.y += playerVelocity.y * delta; // Apply to camera's Y
 
-          // Basic ground collision check
-          const { height: estimatedGroundYFeet } = getTerrainHeight(
-            cam.position.x,
-            cam.position.z
+          // Basic ground collision check with terrain (eye-level based)
+          const playerFeetY = playerCamera.position.y - PLAYER_EYES_OFFSET;
+          const { height: terrainHeightAtPlayer } = getTerrainHeight(
+            playerCamera.position.x,
+            playerCamera.position.z
           );
-          const estimatedGroundY = estimatedGroundYFeet + PLAYER_HEIGHT;
-          if (cam.position.y < estimatedGroundY) {
-            cam.position.y = estimatedGroundY;
+          if (playerFeetY < terrainHeightAtPlayer) {
+            playerCamera.position.y =
+              terrainHeightAtPlayer + PLAYER_EYES_OFFSET; // Reset eye-level
             playerVelocity.y = 0;
           }
           // Update starfield position even when paused/popup visible
           if (stars) {
-            stars.position.copy(cam.position);
+            stars.position.copy(camera.position);
           }
-          return; // Don't process horizontal movement or terrain updates
+          return;
         }
 
         // --- Normal Movement Logic (only runs if not paused and no popup) ---
-        const terrainMeshes = Array.from(activeChunks.values()); // Get active terrain for collision
 
-        // Apply damping (friction) to XZ movement
+        // Apply damping to XZ movement intentions
         playerVelocity.x -= playerVelocity.x * PLAYER_DAMPING * delta;
         playerVelocity.z -= playerVelocity.z * PLAYER_DAMPING * delta;
 
-        // Get movement direction from input flags
+        // Update XZ velocity based on input (these are desired speeds in local camera space)
         playerDirection.z = Number(moveForward) - Number(moveBackward);
-        playerDirection.x = Number(moveRight) - Number(moveLeft); // Corrected: D is right (+X), A is left (-X)
+        playerDirection.x = Number(moveRight) - Number(moveLeft);
         playerDirection.normalize(); // Ensure consistent speed diagonally
 
-        // Apply acceleration based on input
         if (moveForward || moveBackward)
-          playerVelocity.z -= playerDirection.z * PLAYER_ACCELERATION * delta; // W/S affect Z velocity relative to camera
+          playerVelocity.z -= playerDirection.z * PLAYER_ACCELERATION * delta;
         if (moveLeft || moveRight)
-          playerVelocity.x += playerDirection.x * PLAYER_ACCELERATION * delta; // A/D affect X velocity relative to camera
+          playerVelocity.x += playerDirection.x * PLAYER_ACCELERATION * delta;
 
-        // Move the PointerLockControls object using its built-in methods
-        controls.moveForward(-playerVelocity.z * delta); // Move along camera's forward/backward axis
-        controls.moveRight(playerVelocity.x * delta); // Move along camera's right/left axis
+        // Calculate actual displacement for this frame
+        const intendedDeltaX = playerVelocity.x * delta;
+        const intendedDeltaZ = playerVelocity.z * delta; // Forward intent makes velocity.z negative
 
-        // Handle vertical movement (gravity and jumping)
-        cam.position.y += playerVelocity.y * delta; // Apply vertical velocity
-        playerVelocity.y -= GRAVITY * delta; // Apply gravity
+        // --- Attempt X-axis local movement (Strafe) ---
+        if (Math.abs(intendedDeltaX) > 0.0001) {
+          playerCamera.translateX(intendedDeltaX);
 
-        // Ground collision detection using raycasting
-        mainRaycaster.ray.origin.copy(cam.position);
-        mainRaycaster.ray.direction.set(0, -1, 0); // Ray points straight down
-        mainRaycaster.near = 0;
-        mainRaycaster.far = PLAYER_HEIGHT + 0.2; // Ray length just below player's feet
-        const intersections = mainRaycaster.intersectObjects(
-          terrainMeshes,
-          false // Don't check descendants (terrain chunks have no important descendants for this)
-        );
-
-        if (intersections.length > 0) {
-          // If ray hits ground
-          const groundPoint = intersections[0].point;
-          if (cam.position.y < groundPoint.y + PLAYER_HEIGHT) {
-            // If player is below or at ground level
-            cam.position.y = groundPoint.y + PLAYER_HEIGHT; // Snap to ground
-            playerVelocity.y = 0; // Stop falling
-            canJump = true; // Allow jumping
-          }
-        } else {
-          // If ray doesn't hit ground (e.g., over a cliff)
-          canJump = false;
-          // Fallback check to prevent falling through map in rare cases
-          const { height: estimatedPlayerFeetY } = getTerrainHeight(
-            cam.position.x,
-            cam.position.z
+          // Update player's AABB (center is at player's base + half height)
+          // Player base Y = playerCamera.position.y - PLAYER_EYES_OFFSET
+          const playerBaseY = playerCamera.position.y - PLAYER_EYES_OFFSET;
+          playerBoundingBox.setFromCenterAndSize(
+            new Vector3(
+              playerCamera.position.x,
+              playerBaseY + PLAYER_HEIGHT / 2,
+              playerCamera.position.z
+            ),
+            playerBoxDimensions
           );
-          const estimatedPlayerEyeY = estimatedPlayerFeetY + PLAYER_HEIGHT;
-          if (cam.position.y < estimatedPlayerEyeY - CHUNK_SIZE * 2) {
-            // If fallen very far
-            console.warn("Player fell far below terrain, resetting position.");
-            cam.position.y = estimatedPlayerEyeY + 5; // Teleport up
-            playerVelocity.y = 0;
-            canJump = true;
+
+          for (const chunk of activeChunks.values()) {
+            for (const child of chunk.children) {
+              if (
+                child.userData.isRandomObject &&
+                child.visible &&
+                child.isMesh
+              ) {
+                const objectBox = new Box3().setFromObject(child);
+                if (playerBoundingBox.intersectsBox(objectBox)) {
+                  // Collision on X: Calculate penetration and push back
+                  const penetrationX =
+                    intendedDeltaX > 0
+                      ? playerBoundingBox.max.x - objectBox.min.x
+                      : objectBox.max.x - playerBoundingBox.min.x;
+                  playerCamera.translateX(
+                    -(intendedDeltaX > 0 ? penetrationX : -penetrationX) -
+                      Math.sign(intendedDeltaX) * COLLISION_EPSILON
+                  );
+                  playerVelocity.x = 0;
+                  break;
+                }
+              }
+            }
+            if (playerVelocity.x === 0) break;
           }
         }
 
-        // Update player shadow position
-        if (playerShadow && controls.isLocked) {
-          // Raycast from slightly above player's head downwards
-          const shadowRayOrigin = new Vector3(
-            cam.position.x,
-            cam.position.y + PLAYER_HEIGHT, // Start ray high enough
-            cam.position.z
+        // --- Attempt Z-axis local movement (Forward/Backward) ---
+        if (Math.abs(intendedDeltaZ) > 0.0001) {
+          playerCamera.translateZ(intendedDeltaZ);
+
+          // Update player's AABB
+          const playerBaseY = playerCamera.position.y - PLAYER_EYES_OFFSET;
+          playerBoundingBox.setFromCenterAndSize(
+            new Vector3(
+              playerCamera.position.x,
+              playerBaseY + PLAYER_HEIGHT / 2,
+              playerCamera.position.z
+            ),
+            playerBoxDimensions
           );
+
+          for (const chunk of activeChunks.values()) {
+            for (const child of chunk.children) {
+              if (
+                child.userData.isRandomObject &&
+                child.visible &&
+                child.isMesh
+              ) {
+                const objectBox = new Box3().setFromObject(child);
+                if (playerBoundingBox.intersectsBox(objectBox)) {
+                  // Collision on Z: Calculate penetration and push back
+                  const penetrationZ =
+                    intendedDeltaZ > 0
+                      ? playerBoundingBox.max.z - objectBox.min.z
+                      : objectBox.max.z - playerBoundingBox.min.z;
+                  playerCamera.translateZ(
+                    -(intendedDeltaZ > 0 ? penetrationZ : -penetrationZ) -
+                      Math.sign(intendedDeltaZ) * COLLISION_EPSILON
+                  );
+                  playerVelocity.z = 0;
+                  break;
+                }
+              }
+            }
+            if (playerVelocity.z === 0) break;
+          }
+        }
+
+        // --- Y-axis movement (gravity, jump) ---
+        playerCamera.position.y += playerVelocity.y * delta; // Apply to camera's Y (eye-level)
+        playerVelocity.y -= GRAVITY * delta; // Apply gravity
+
+        // --- Resolve Y-axis Object Collisions (landing on objects or hitting underside) ---
+        const playerBaseYForObjectCollision =
+          playerCamera.position.y - PLAYER_EYES_OFFSET;
+        playerBoundingBox.setFromCenterAndSize(
+          new Vector3(
+            playerCamera.position.x,
+            playerBaseYForObjectCollision + PLAYER_HEIGHT / 2,
+            playerCamera.position.z
+          ),
+          playerBoxDimensions
+        );
+
+        let onObject = false;
+        for (const chunk of activeChunks.values()) {
+          for (const child of chunk.children) {
+            if (
+              child.userData.isRandomObject &&
+              child.visible &&
+              child.isMesh
+            ) {
+              const objectBox = new Box3().setFromObject(child);
+              if (playerBoundingBox.intersectsBox(objectBox)) {
+                // Check if landing on top
+                if (
+                  playerVelocity.y <= 0 &&
+                  playerBoundingBox.min.y < objectBox.max.y &&
+                  playerBoundingBox.max.y > objectBox.max.y - 0.2
+                ) {
+                  if (
+                    playerBoundingBox.max.x > objectBox.min.x &&
+                    playerBoundingBox.min.x < objectBox.max.x &&
+                    playerBoundingBox.max.z > objectBox.min.z &&
+                    playerBoundingBox.min.z < objectBox.max.z
+                  ) {
+                    playerCamera.position.y =
+                      objectBox.max.y + PLAYER_EYES_OFFSET; // Set eye-level based on object top
+                    playerVelocity.y = 0;
+                    canJump = true;
+                    onObject = true;
+                    break;
+                  }
+                }
+                // Check if hitting underside while jumping
+                else if (
+                  playerVelocity.y > 0 &&
+                  playerBoundingBox.max.y > objectBox.min.y &&
+                  playerBoundingBox.min.y < objectBox.min.y + 0.2
+                ) {
+                  if (
+                    playerBoundingBox.max.x > objectBox.min.x &&
+                    playerBoundingBox.min.x < objectBox.max.x &&
+                    playerBoundingBox.max.z > objectBox.min.z &&
+                    playerBoundingBox.min.z < objectBox.max.z
+                  ) {
+                    playerCamera.position.y =
+                      objectBox.min.y - (PLAYER_HEIGHT - PLAYER_EYES_OFFSET); // Set eye-level based on object bottom
+                    playerVelocity.y = 0; // Stop upward movement
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          if (
+            onObject ||
+            (playerVelocity.y === 0 && isPaused === false && controls.isLocked)
+          )
+            break; // Break if landed or hit underside and game is active
+        }
+
+        // --- Ground collision detection using raycasting (with terrain) ---
+        if (!onObject) {
+          mainRaycaster.ray.origin.copy(playerCamera.position); // Ray from eye level
+          mainRaycaster.ray.direction.set(0, -1, 0);
+          mainRaycaster.near = 0;
+          mainRaycaster.far = PLAYER_EYES_OFFSET + 0.2; // Ray length to just below player's feet
+
+          const terrainMeshes = Array.from(activeChunks.values());
+          const intersections = mainRaycaster.intersectObjects(
+            terrainMeshes,
+            false
+          );
+
+          if (intersections.length > 0) {
+            const groundPoint = intersections[0].point; // This is the actual ground y
+            // If current eye level is below where it should be (ground + eye_offset)
+            if (
+              playerCamera.position.y <
+              groundPoint.y + PLAYER_EYES_OFFSET + COLLISION_EPSILON
+            ) {
+              playerCamera.position.y = groundPoint.y + PLAYER_EYES_OFFSET;
+              playerVelocity.y = 0;
+              canJump = true;
+            }
+          } else {
+            canJump = false;
+            // Fallback if ray misses
+            const playerFeetY = playerCamera.position.y - PLAYER_EYES_OFFSET;
+            const { height: estimatedTerrainFeetY } = getTerrainHeight(
+              playerCamera.position.x,
+              playerCamera.position.z
+            );
+            if (playerFeetY < estimatedTerrainFeetY - CHUNK_SIZE) {
+              // If feet are far below expected terrain
+              console.warn(
+                "Player fell far below terrain (fallback), resetting position."
+              );
+              playerCamera.position.y =
+                estimatedTerrainFeetY + PLAYER_EYES_OFFSET + 1; // Reset eye level, +1 for buffer
+              playerVelocity.y = 0;
+              canJump = true;
+            }
+          }
+        }
+
+        // Update player shadow position (based on camera's XZ, raycast down from feet level)
+        if (playerShadow && controls.isLocked) {
+          const shadowRayOrigin = playerCamera.position
+            .clone()
+            .setY(playerCamera.position.y - PLAYER_EYES_OFFSET + PLAYER_RADIUS); // Ray from slightly above feet
           mainRaycaster.set(shadowRayOrigin, new Vector3(0, -1, 0));
           mainRaycaster.near = 0;
-          // Make ray long enough to hit ground even if player is high up
-          mainRaycaster.far = PLAYER_HEIGHT * 2 + TERRAIN_AMPLITUDE + 10;
+          mainRaycaster.far = PLAYER_RADIUS + TERRAIN_AMPLITUDE + 1; // Ray length to catch ground
 
+          const terrainMeshes = Array.from(activeChunks.values());
           const shadowHitIntersections = mainRaycaster.intersectObjects(
             terrainMeshes,
             false
           );
           if (shadowHitIntersections.length > 0) {
-            // Place shadow slightly above the intersection point
             playerShadow.position.set(
-              cam.position.x,
-              shadowHitIntersections[0].point.y + 0.05, // Small offset to prevent z-fighting
-              cam.position.z
+              playerCamera.position.x, // Shadow XZ matches camera XZ
+              shadowHitIntersections[0].point.y + 0.05,
+              playerCamera.position.z
             );
             playerShadow.visible = true;
           } else {
-            playerShadow.visible = false; // Hide shadow if no ground found below
+            playerShadow.visible = false;
           }
         } else if (playerShadow) {
-          playerShadow.visible = false; // Ensure shadow is hidden if not locked
+          playerShadow.visible = false;
         }
 
         // Update terrain chunks based on new player position
@@ -1291,7 +1460,7 @@
 
         // Update starfield position to follow camera (keeps stars infinitely distant)
         if (stars) {
-          stars.position.copy(cam.position);
+          stars.position.copy(camera.position);
         }
 
         // Check for orb collisions
