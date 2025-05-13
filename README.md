@@ -1,6 +1,7 @@
 # Endless Wandering: A Meditation on Striving
 
 **Endless Wandering** is an interactive 3D experience built with Three.js. It serves as a digital meditation on the theme of endless striving inherent in the human condition. The player navigates an infinite, procedurally generated landscape, encountering scattered orbs. Collecting these orbs reveals philosophical quotes, prompting moments of reflection on effort, meaning, and the perpetual nature of goals. The environment also features ephemeral "anomalies" – fleeting visual oddities that add to the contemplative and sometimes surreal atmosphere of the journey.
+![endless-wandering](https://github.com/user-attachments/assets/9ca69cf2-a17c-4e43-aa69-195bae32ce22)
 
 ## Core Features
 
