@@ -98,13 +98,6 @@ A multi-stage collision system is implemented in `handlePlayerMovement`:
 * `depthWrite: false` and `depthTest: true` are set on the material to ensure stars are occluded by terrain but don't interfere with its rendering.
 * The starfield's position is updated in `handlePlayerMovement` to match the camera's position, creating the illusion of an infinitely distant, static starscape.
 
-## Running the Project
-
-1.  Ensure you have a modern web browser with WebGL support.
-2.  Save the HTML file (containing all HTML, CSS, and JavaScript) to your local system.
-3.  Open the HTML file directly in your web browser.
-    * Due to browser security restrictions regarding `file:///` URLs and ES6 modules, you might need to serve the file through a local web server. Simple servers can be started with Python (`python -m http.server`) or Node.js (`npx http-server`).
-
 ## Controls
 
 * **W, A, S, D**: Move forward, left, backward, and right respectively.
