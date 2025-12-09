@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Endless Wandering</title>
     <style>
       body {
@@ -11,6 +16,10 @@
         font-family: "Inter", sans-serif;
         /* Background color removed from body, handled by Three.js */
         color: #fff;
+        touch-action: none; /* Prevent Pull-to-refresh and scrolling on mobile */
+        -webkit-touch-callout: none;
+        user-select: none;
+        -webkit-user-select: none;
       }
       canvas {
         display: block;
@@ -85,6 +94,43 @@
       #gameUIDiv p {
         margin: 5px 0;
       }
+
+      /* Mobile Controls */
+      #joystickZone {
+        position: absolute;
+        bottom: 50px;
+        left: 50px;
+        width: 150px;
+        height: 150px;
+        z-index: 5;
+        display: none; /* Shown via JS if mobile */
+        touch-action: none;
+      }
+
+      #mobileJumpBtn {
+        position: absolute;
+        bottom: 80px;
+        right: 50px;
+        width: 80px;
+        height: 80px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        z-index: 5;
+        display: none;
+        touch-action: manipulation;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: rgba(255, 255, 255, 0.7);
+        font-weight: bold;
+        font-size: 1.2em;
+        user-select: none;
+      }
+
+      #mobileJumpBtn:active {
+        background: rgba(255, 255, 255, 0.3);
+      }
     </style>
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap"
@@ -99,6 +145,7 @@
         }
       }
     </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
   </head>
   <body>
     <div id="blocker">
@@ -122,6 +169,8 @@
     </div>
 
     <div id="gameUIDiv"></div>
+    <div id="joystickZone"></div>
+    <div id="mobileJumpBtn" style="display: none">JUMP</div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
 
@@ -158,6 +207,7 @@
         IcosahedronGeometry, // For collectible orbs
         PointLight, // For orb glow
         Box3, // For AABB collision detection
+        CylinderGeometry, // For beacon
       } from "three";
       // Import PointerLockControls for first-person camera movement
       import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
@@ -261,15 +311,21 @@
       let moveLeft = false;
       let moveRight = false;
       let canJump = false;
+      let isMobile = false; // Flag for mobile device detection
+      let joystickVector = { x: 0, y: 0 }; // Store joystick input
 
       // Game state variables
       let isPaused = false; // Use a pause state instead of game over
       let instructionsTitleElement, instructionsTextElement; // DOM elements for instructions/pause screen
       let quotePopupElement, quoteTextElement, quoteSourceElement; // DOM elements for quote popup
 
+      // Waypoint System
+      let currentWaypoint = null; // Single active waypoint
+      let waypointGeometry, waypointMaterial, beaconGeometry, beaconMaterial;
+
       // Orb Collection state
-      let collectibleOrbs = []; // Array to store active collectible orb objects
-      let orbGeometry, orbMaterial; // Shared resources for orbs
+      // let collectibleOrbs = []; // Array to store active collectible orb objects
+      // let orbGeometry, orbMaterial; // Shared resources for orbs
 
       let playerShadow;
       let playerBoundingBox = new Box3(); // Initialize player's bounding box once
@@ -401,7 +457,7 @@
             if (!isPaused) {
               // Check if the game was paused by ESC, not just by the quote
               console.log("Attempting to re-lock controls after quote.");
-              controls.lock();
+              if (!isMobile) controls.lock();
             } else {
               console.log(
                 "Game is paused (isPaused=true), not re-locking after quote."
@@ -494,17 +550,28 @@
       }
 
       /**
-       * @function initOrbResources
-       * @description Initializes shared geometry and material for collectible orbs.
+       * @function initWaypointResources
+       * @description Initializes resources for the single waypoint and its beacon.
        */
-      function initOrbResources() {
-        orbGeometry = new IcosahedronGeometry(ORB_SIZE, 0); // Simple geometric shape
-        orbMaterial = new MeshStandardMaterial({
+      function initWaypointResources() {
+        waypointGeometry = new IcosahedronGeometry(ORB_SIZE, 0);
+        waypointMaterial = new MeshStandardMaterial({
           color: ORB_COLOR,
           metalness: 0.6,
           roughness: 0.2,
-          emissive: ORB_COLOR, // Make it glow
-          emissiveIntensity: 0.5,
+          emissive: ORB_COLOR,
+          emissiveIntensity: 0.8,
+        });
+
+        // Beacon cylinder (tall, thin) - Tweaked for visibility
+        beaconGeometry = new CylinderGeometry(0.3, 0.3, 400, 16); // Thicker, taller beam
+        beaconGeometry.translate(0, 200, 0); // Shift up so base is at 0
+        beaconMaterial = new MeshBasicMaterial({
+          color: ORB_COLOR,
+          transparent: true,
+          opacity: 0.5, // More visible
+          depthWrite: false,
+          blending: 2, // AdditiveBlending (2) for glow effect
         });
       }
 
@@ -533,10 +600,13 @@
         camera.position.y = PLAYER_EYES_OFFSET;
 
         // Renderer setup
-        renderer = new WebGLRenderer({ antialias: true });
+        renderer = new WebGLRenderer({ antialias: !isMobile }); // Disable antialias on mobile for perf
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.shadowMap.enabled = true;
+        // Optimize resolution for mobile (cap at 2x)
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        // Disable shadows on mobile for performance
+        renderer.shadowMap.enabled = !isMobile;
         renderer.shadowMap.type = PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
 
@@ -567,16 +637,23 @@
         // Event listener for starting/resuming the game
         if (instructions) {
           instructions.addEventListener("click", () => {
-            console.log(
-              "Instructions clicked. quotePopup display:",
-              quotePopupElement.style.display
-            );
-            // Only lock if the quote popup isn't showing
-            if (quotePopupElement.style.display === "none") {
-              console.log("Attempting controls.lock()");
-              controls.lock();
+            if (isMobile) {
+              // On mobile, just hide instructions and start
+              instructions.style.display = "none";
+              blocker.style.display = "none";
+              startWandering();
             } else {
-              console.log("Quote popup is visible, not locking controls.");
+              console.log(
+                "Instructions clicked. quotePopup display:",
+                quotePopupElement.style.display
+              );
+              // Only lock if the quote popup isn't showing
+              if (quotePopupElement.style.display === "none") {
+                console.log("Attempting controls.lock()");
+                controls.lock();
+              } else {
+                console.log("Quote popup is visible, not locking controls.");
+              }
             }
           });
         } else {
@@ -598,25 +675,179 @@
           );
         });
 
+        // Check for mobile device
+        isMobile =
+          /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+            navigator.userAgent
+          );
+        console.log("Is Mobile Device:", isMobile);
+
+        if (isMobile) {
+          // Adjust instructions for mobile
+          const instructionsText = document.getElementById("instructionsText");
+          if (instructionsText) {
+            instructionsText.innerHTML =
+              "Tap to begin.<br>Double-tap for Fullscreen.<br>Drag Left: Move | Drag Right: Look";
+          }
+          controls.enabled = false; // Disable default pointer lock behavior mechanics on mobile if needed, but we keep the object
+
+          // Show mobile controls
+          const joystickZone = document.getElementById("joystickZone");
+          const jumpBtn = document.getElementById("mobileJumpBtn");
+          if (joystickZone) joystickZone.style.display = "block";
+          if (jumpBtn) jumpBtn.style.display = "flex";
+
+          // Initialize Nipple.js
+          if (typeof nipplejs !== "undefined" && joystickZone) {
+            const manager = nipplejs.create({
+              zone: joystickZone,
+              mode: "static",
+              position: { left: "50%", top: "50%" },
+              color: "white",
+              size: 100,
+            });
+
+            manager.on("move", (evt, data) => {
+              if (data.vector) {
+                // Nipple returns vector: y is up (positive), x is right (positive)
+                // We map y to forward/backward (Z). In 3D, forward is -Z.
+                // data.vector.y positive -> should be forward (-Z).
+                // So forward intensity = data.vector.y
+                joystickVector.y = data.vector.y;
+                joystickVector.x = data.vector.x;
+              }
+            });
+
+            manager.on("end", () => {
+              joystickVector.x = 0;
+              joystickVector.y = 0;
+            });
+          }
+
+          // Jump Button Logic
+          if (jumpBtn) {
+            jumpBtn.addEventListener(
+              "touchstart",
+              (e) => {
+                e.preventDefault(); // Prevent ghost clicks
+                if (canJump) {
+                  playerVelocity.y = PLAYER_JUMP_FORCE;
+                  canJump = false;
+                }
+              },
+              { passive: false }
+            );
+          }
+
+          // Touch Look Logic (Right side of screen)
+          let lastTouchX = 0;
+          let lastTouchY = 0;
+          const lookSensitivity = 0.005;
+
+          document.addEventListener(
+            "touchstart",
+            (e) => {
+              for (let i = 0; i < e.touches.length; i++) {
+                const t = e.touches[i];
+                if (t.clientX > window.innerWidth / 2) {
+                  lastTouchX = t.clientX;
+                  lastTouchY = t.clientY;
+                }
+              }
+            },
+            { passive: false }
+          );
+
+          // Mobile Fullscreen Logic - Double Tap
+          let lastTap = 0;
+          document.addEventListener("touchend", function (e) {
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTap;
+            if (tapLength < 500 && tapLength > 0) {
+              // Double tap detected
+              e.preventDefault();
+              if (!document.fullscreenElement) {
+                if (document.documentElement.requestFullscreen) {
+                  document.documentElement.requestFullscreen().catch((err) => {
+                    console.log(
+                      `Error attempting to enable fullscreen: ${err.message}`
+                    );
+                  });
+                }
+              } else {
+                if (document.exitFullscreen) {
+                  document.exitFullscreen();
+                }
+              }
+            }
+            lastTap = currentTime;
+          });
+
+          document.addEventListener(
+            "touchmove",
+            (e) => {
+              // Prevent default only if interacting with game controls (simple heuristic)
+              // e.preventDefault();
+
+              for (let i = 0; i < e.touches.length; i++) {
+                const t = e.touches[i];
+                if (t.clientX > window.innerWidth / 2) {
+                  const deltaX = t.clientX - lastTouchX;
+                  const deltaY = t.clientY - lastTouchY;
+                  lastTouchX = t.clientX;
+                  lastTouchY = t.clientY;
+
+                  if (!isPaused) {
+                    // Fix Tilt: Rotate Body (Yaw) and Head (Pitch) separately
+                    const yawObject = controls.getObject(); // This is usually the Group/Player body
+                    // Yaw (Left/Right) rotates around Y Axis of the body
+                    yawObject.rotation.y -= deltaX * lookSensitivity;
+
+                    // Pitch (Up/Down) rotates the Camera (child) around X Axis
+                    // We assume camera is the first child or the camera variable itself if using that pattern.
+                    // PointerLockControls usually adds camera as child of yawObject.
+                    // But let's check init: controls = new PointerLockControls(camera, ...)
+                    // In that case, controls.getObject() is the yawObject.
+                    // camera is INSIDE controls.getObject().
+
+                    // However, if we rotated 'cam' before, we might have been rotating the wrong thing.
+                    // Let's force rotation on the camera for pitch.
+                    camera.rotation.x -= deltaY * lookSensitivity;
+                    camera.rotation.x = Math.max(
+                      -Math.PI / 2,
+                      Math.min(Math.PI / 2, camera.rotation.x)
+                    );
+                  }
+                }
+              }
+            },
+            { passive: false }
+          );
+        }
+
+        scene.add(controls.getObject()); // Add player (which is the camera group managed by controls) to scene
+
         // Event listener for when pointer lock is released (e.g., ESC pressed)
         controls.addEventListener("unlock", () => {
-          console.log(
-            "Controls unlocked. quotePopup display:",
-            quotePopupElement.style.display
-          );
-          // Only show pause screen if the quote popup isn't the reason for unlock
-          if (quotePopupElement.style.display === "none") {
-            pauseWandering();
-            blocker.style.display = "flex";
-            instructions.style.display = ""; // Show instructions div
-            if (instructionsTitleElement)
-              instructionsTitleElement.textContent = "Paused";
-            if (instructionsTextElement)
-              instructionsTextElement.textContent =
-                "Click to resume your wandering.";
+          // On mobile, we don't rely on 'unlock' event as much, or we simulate it manually
+          if (!isMobile) {
+            console.log(
+              "Controls unlocked. quotePopup display:",
+              quotePopupElement.style.display
+            );
+            // Only show pause screen if the quote popup isn't the reason for unlock
+            if (quotePopupElement.style.display === "none") {
+              pauseWandering();
+              blocker.style.display = "flex";
+              instructions.style.display = ""; // Show instructions div
+              if (instructionsTitleElement)
+                instructionsTitleElement.textContent = "Paused";
+              if (instructionsTextElement)
+                instructionsTextElement.textContent =
+                  "Click to resume your wandering.";
+            }
           }
         });
-        scene.add(controls.getObject()); // Add player (which is the camera group managed by controls) to scene
 
         // Player Shadow setup
         const shadowGeo = new CircleGeometry(PLAYER_RADIUS, 16);
@@ -634,14 +865,8 @@
         createStarfield();
         // Initialize resources for oddities and orbs
         initOddityResources();
-        initOrbResources();
-
-        // Event listeners for player input (movement and jump)
-        document.addEventListener("keydown", onKeyDown);
-        document.addEventListener("keyup", onKeyUp);
-
-        // Initialize main raycaster for ground checks
-        mainRaycaster = new Raycaster();
+        initWaypointResources(); // Initialize new waypoint resources
+        // initOrbResources(); // Orb resources no longer needed
 
         // Initial player (camera) position
         const { height: initialGroundHeight } = getTerrainHeight(0, 0);
@@ -657,6 +882,15 @@
             ODDITY_SPAWN_INTERVAL_MIN,
             ODDITY_SPAWN_INTERVAL_MAX
           );
+
+        // Spawn first waypoint
+        spawnWaypoint();
+
+        document.addEventListener("keydown", onKeyDown);
+        document.addEventListener("keyup", onKeyUp);
+
+        // Initialize main raycaster for ground checks
+        mainRaycaster = new Raycaster();
 
         console.log("init() completed.");
       }
@@ -688,10 +922,11 @@
           });
           oddities = [];
           // Clear and reset collectible orbs
-          collectibleOrbs.forEach((orb) => {
-            if (orb.mesh) scene.remove(orb.mesh);
-          });
-          collectibleOrbs = [];
+          if (currentWaypoint) {
+            scene.remove(currentWaypoint.mesh);
+            scene.remove(currentWaypoint.beacon);
+            currentWaypoint = null;
+          }
 
           nextOdditySpawnTime =
             now +
@@ -703,14 +938,18 @@
           if (instructionsTitleElement)
             instructionsTitleElement.textContent = "Endless Wandering";
           if (instructionsTextElement)
-            instructionsTextElement.innerHTML =
-              "Click to begin. Wander the infinite landscape.<br>Collect the glowing orbs to ponder.<br>Observe the anomalies.";
+            instructionsTextElement.innerHTML = isMobile
+              ? "Tap to begin. Double-tap to enter Fullscreen.<br>Drag Left to Move. Drag Right to Look."
+              : "Click to begin. Wander the infinite landscape.<br>Collect the glowing orbs to ponder.<br>Observe the anomalies.";
         } else {
           // Resuming from a previously paused state (isPaused was true)
           console.log("Resuming from pause.");
           const pausedDuration = now - previousFrameTime; // Approximation of pause duration
           nextOdditySpawnTime += pausedDuration;
         }
+
+        // If no waypoint exists (e.g. first start), spawn one
+        if (!currentWaypoint) spawnWaypoint();
 
         isPaused = false; // Game is now active
         if (playerShadow) playerShadow.visible = true;
@@ -835,34 +1074,33 @@
             // Set the Z coordinate (height) in the buffer (plane is initially XY)
             positions[vertexBufferIndex * 3 + 2] = height;
 
-            // --- Place Collectible Orb ---
-            // Avoid placing on the very edges of the chunk to prevent overlap issues
-            if (
-              vx > 0 &&
-              vx < CHUNK_SEGMENTS &&
-              vy > 0 &&
-              vy < CHUNK_SEGMENTS
-            ) {
-              if (Math.random() < ORB_SPAWN_PROBABILITY) {
-                if (orbGeometry && orbMaterial) {
-                  // Ensure resources are initialized
-                  const orbMesh = new Mesh(orbGeometry, orbMaterial);
-                  orbMesh.position.set(
-                    worldX,
-                    height + ORB_HOVER_HEIGHT,
-                    worldZ
-                  ); // Use world coords for positioning in scene
-                  orbMesh.castShadow = true;
-                  orbMesh.userData.isCollectibleOrb = true; // Mark for identification
-                  collectibleOrbs.push({ mesh: orbMesh }); // Add to global list
-                  scene.add(orbMesh); // Add directly to the scene
-                } else {
-                  console.warn(
-                    "Orb resources not ready for spawning in createTerrainChunk."
-                  );
-                }
-              }
-            }
+            // --- Place Collectible Orb (REMOVED: Now using Waypoint System) ---
+            // if (
+            //   vx > 0 &&
+            //   vx < CHUNK_SEGMENTS &&
+            //   vy > 0 &&
+            //   vy < CHUNK_SEGMENTS
+            // ) {
+            //   if (Math.random() < ORB_SPAWN_PROBABILITY) {
+            //     if (orbGeometry && orbMaterial) {
+            //       // Ensure resources are initialized
+            //       const orbMesh = new Mesh(orbGeometry, orbMaterial);
+            //       orbMesh.position.set(
+            //         worldX,
+            //         height + ORB_HOVER_HEIGHT,
+            //         worldZ
+            //       ); // Use world coords for positioning in scene
+            //       orbMesh.castShadow = true;
+            //       orbMesh.userData.isCollectibleOrb = true; // Mark for identification
+            //       collectibleOrbs.push({ mesh: orbMesh }); // Add to global list
+            //       scene.add(orbMesh); // Add directly to the scene
+            //     } else {
+            //       console.warn(
+            //         "Orb resources not ready for spawning in createTerrainChunk."
+            //       );
+            //     }
+            //   }
+            // }
 
             // Calculate vertex color based on normalized height [-1, 1]
             const color = new Color();
@@ -993,18 +1231,19 @@
           }
         });
 
+        // (Orb unload logic removed as we use a single persistent/respawning waypoint)
         // Unload collectible orbs that are too far away (based on distance)
-        for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
-          const orb = collectibleOrbs[i];
-          const distanceToPlayer = playerPos.distanceTo(orb.mesh.position);
+        // for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
+        //   const orb = collectibleOrbs[i];
+        //   const distanceToPlayer = playerPos.distanceTo(orb.mesh.position);
 
-          // If the orb is beyond the unload distance, remove it
-          if (distanceToPlayer > ORB_UNLOAD_DISTANCE) {
-            scene.remove(orb.mesh);
-            // No need to dispose shared geometry/material
-            collectibleOrbs.splice(i, 1);
-          }
-        }
+        //   // If the orb is beyond the unload distance, remove it
+        //   if (distanceToPlayer > ORB_UNLOAD_DISTANCE) {
+        //     scene.remove(orb.mesh);
+        //     // No need to dispose shared geometry/material
+        //     collectibleOrbs.splice(i, 1);
+        //   }
+        // }
       }
 
       /**
@@ -1117,43 +1356,69 @@
       }
 
       /**
-       * @function checkOrbCollisions
-       * @description Checks for collisions between the player and collectible orbs.
+       * @function spawnWaypoint
+       * @description Spawns a single waypoint at a reasonable distance from the player.
        */
-      function checkOrbCollisions() {
-        const playerCamera = controls.getObject(); // This is the camera
-        const playerPosition = playerCamera.position; // Use camera's world position for distance check
+      function spawnWaypoint() {
+        if (currentWaypoint) {
+          scene.remove(currentWaypoint.mesh);
+          scene.remove(currentWaypoint.beacon);
+        }
 
-        for (let i = collectibleOrbs.length - 1; i >= 0; i--) {
-          const orb = collectibleOrbs[i];
-          if (!orb.mesh) {
-            // Safety check if mesh was somehow removed elsewhere
-            collectibleOrbs.splice(i, 1);
-            continue;
-          }
-          // Check distance from player's eye level to orb center.
-          // For more accuracy, you might check distance from player's base.
-          const distance = playerPosition.distanceTo(orb.mesh.position);
+        const playerCamera = controls.getObject();
+        const pPos = playerCamera.position;
 
-          if (distance < ORB_COLLECTION_RADIUS) {
-            // Collision detected - collect the orb
-            collectOrb(i);
-            break; // Only collect one orb per frame max
-          }
+        // Distance: Min 40, Max 80 (Accessible but requires travel)
+        const dist = MathUtils.randFloat(40, 80);
+        const angle = Math.random() * Math.PI * 2;
+
+        const tx = pPos.x + Math.cos(angle) * dist;
+        const tz = pPos.z + Math.sin(angle) * dist;
+
+        // Get height at this location
+        const { height } = getTerrainHeight(tx, tz);
+
+        const mesh = new Mesh(waypointGeometry, waypointMaterial);
+        mesh.position.set(tx, height + ORB_HOVER_HEIGHT, tz);
+        scene.add(mesh);
+
+        // Add Beacon
+        const beacon = new Mesh(beaconGeometry, beaconMaterial);
+        beacon.position.set(tx, height, tz);
+        scene.add(beacon);
+
+        currentWaypoint = { mesh, beacon };
+        console.log("Spawned waypoint at", tx, height, tz);
+      }
+
+      /**
+       * @function checkWaypointCollision
+       * @description Checks collision with the single active waypoint.
+       */
+      function checkWaypointCollision() {
+        if (!currentWaypoint) return;
+
+        const playerCamera = controls.getObject();
+        const distance = playerCamera.position.distanceTo(
+          currentWaypoint.mesh.position
+        );
+
+        if (distance < ORB_COLLECTION_RADIUS) {
+          collectWaypoint();
         }
       }
 
       /**
-       * @function collectOrb
-       * @description Handles the logic when an orb is collected.
-       * @param {number} index - The index of the orb in the collectibleOrbs array.
+       * @function collectWaypoint
+       * @description Handles waypoint collection.
        */
-      function collectOrb(index) {
-        const orb = collectibleOrbs[index];
-
-        // Remove orb from scene and array
-        scene.remove(orb.mesh);
-        collectibleOrbs.splice(index, 1);
+      function collectWaypoint() {
+        // Remove current
+        if (currentWaypoint) {
+          scene.remove(currentWaypoint.mesh);
+          scene.remove(currentWaypoint.beacon);
+          currentWaypoint = null;
+        }
 
         // Select and display quote
         const quote = quotes[Math.floor(Math.random() * quotes.length)];
@@ -1164,8 +1429,10 @@
 
         // Unlock controls
         controls.unlock();
+        console.log("Collected waypoint!");
 
-        console.log("Collected orb!");
+        // Spawn NEW waypoint immediately (it will be waiting when they resume)
+        spawnWaypoint();
       }
 
       /**
@@ -1174,7 +1441,7 @@
        * @param {number} delta - Time elapsed since the last frame.
        */
       function handlePlayerMovement(delta) {
-        const playerCamera = controls.getObject(); // This is the camera. Its position is the eye-level.
+        const playerCamera = controls.getObject(); // This is the camera group (Yaw Object)
 
         // Skip movement if paused or quote popup is visible
         if (
@@ -1210,14 +1477,55 @@
         playerVelocity.z -= playerVelocity.z * PLAYER_DAMPING * delta;
 
         // Update XZ velocity based on input (these are desired speeds in local camera space)
-        playerDirection.z = Number(moveForward) - Number(moveBackward);
-        playerDirection.x = Number(moveRight) - Number(moveLeft);
+        // Update XZ velocity based on input (these are desired speeds in local camera space)
+
+        let desiredZ = Number(moveForward) - Number(moveBackward);
+        let desiredX = Number(moveRight) - Number(moveLeft);
+
+        if (isMobile) {
+          // Integrate joystick input (y is forward/back, x is left/right)
+          // Joystick Y is positive UP. Moving UP means FORWARD.
+          desiredZ += joystickVector.y;
+          desiredX += joystickVector.x;
+        }
+
+        playerDirection.z = desiredZ;
+        playerDirection.x = desiredX;
         playerDirection.normalize(); // Ensure consistent speed diagonally
 
-        if (moveForward || moveBackward)
-          playerVelocity.z -= playerDirection.z * PLAYER_ACCELERATION * delta;
-        if (moveLeft || moveRight)
-          playerVelocity.x += playerDirection.x * PLAYER_ACCELERATION * delta;
+        // Use max magnitude to allow analog speed control if joystick is partially pushed
+        const inputMagnitude = Math.min(
+          1.0,
+          Math.sqrt(desiredZ * desiredZ + desiredX * desiredX)
+        );
+
+        if (Math.abs(desiredZ) > 0 || Math.abs(desiredX) > 0) {
+          // We use the normalized direction but scale acceleration by input magnitude
+          // Wait, normalize() makes it length 1.
+          // If we want analog control, we should multiply by inputMagnitude.
+
+          // Simple approach: Apply acceleration based on direction.
+          // If boolean keys are used, magnitude is 1.
+          // If joystick is used, 'moveForward' etc are false, so we rely on joystickVector.
+
+          if (moveForward || moveBackward)
+            playerVelocity.z -= playerDirection.z * PLAYER_ACCELERATION * delta;
+          else if (isMobile && Math.abs(joystickVector.y) > 0)
+            playerVelocity.z -=
+              playerDirection.z *
+              PLAYER_ACCELERATION *
+              delta *
+              Math.abs(joystickVector.y);
+
+          if (moveLeft || moveRight)
+            playerVelocity.x += playerDirection.x * PLAYER_ACCELERATION * delta;
+          else if (isMobile && Math.abs(joystickVector.x) > 0)
+            playerVelocity.x +=
+              playerDirection.x *
+              PLAYER_ACCELERATION *
+              delta *
+              Math.abs(joystickVector.x);
+        }
 
         // Calculate actual displacement for this frame
         const intendedDeltaX = playerVelocity.x * delta;
@@ -1463,8 +1771,8 @@
           stars.position.copy(camera.position);
         }
 
-        // Check for orb collisions
-        checkOrbCollisions();
+        // Check for singleton waypoint collision
+        checkWaypointCollision();
       }
 
       /**
